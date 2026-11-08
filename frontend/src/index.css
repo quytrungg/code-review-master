@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-ink font-sans antialiased;
+    background-image:
+      radial-gradient(900px 500px at 12% -10%, rgba(124, 139, 255, 0.12), transparent 60%),
+      radial-gradient(700px 420px at 100% 0%, rgba(61, 220, 151, 0.06), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    @apply bg-accent/30;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-accent/60 ring-offset-2 ring-offset-canvas;
+  }
+}
+
+@layer components {
+  .surface-card {
+    @apply rounded-2xl border border-border bg-surface/90 shadow-card backdrop-blur;
+  }
+
+  .label-text {
+    @apply text-xs font-medium uppercase tracking-[0.08em] text-inkMuted;
+  }
+}
+
+/* Markdown rendered inside review cards. */
+.md-body {
+  @apply text-sm leading-relaxed text-ink;
+}
+.md-body p {
+  @apply my-1;
+}
+.md-body ul {
+  @apply my-1 list-disc pl-5;
+}
+.md-body ol {
+  @apply my-1 list-decimal pl-5;
+}
+.md-body code {
+  @apply rounded bg-surfaceMuted px-1 py-0.5 font-mono text-[0.8rem] text-accent;
+}
+.md-body pre {
+  @apply my-2 overflow-x-auto rounded-lg border border-border bg-canvas p-3;
+}
+.md-body pre code {
+  @apply bg-transparent p-0 text-ink;
+}
+.md-body a {
+  @apply text-accent underline decoration-accent/40 underline-offset-2;
+}
+.md-body strong {
+  @apply font-semibold text-white;
+}
+.md-body blockquote {
+  @apply my-2 border-l-2 border-borderStrong pl-3 text-inkMuted;
+}

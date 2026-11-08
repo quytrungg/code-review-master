@@ -1,0 +1,29 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local database
+*.db
+*.db-journal
+*.sqlite3
+
+# Uploaded skill foundations (user data, recreated on upload)
+code-review-foundations/
+
+# Environment
+.env
+.env.local
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,35 @@
+# Build context hygiene: only source, pinned manifests and the skill library are needed.
+
+# Version control / editors / OS
+.git
+.gitignore
+**/.DS_Store
+**/.idea
+**/.vscode
+
+# Python caches and scratch installs
+**/__pycache__
+**/*.py[cod]
+backend/.venv
+backend/.pytest_cache
+backend/.ruff_cache
+backend/tests
+
+# Secrets and local data never enter the image
+backend/.env
+backend/.env.local
+**/*.db
+**/*.db-journal
+**/*.sqlite3
+code-review-foundations
+
+# Node dependencies and build output (the frontend stage builds its own dist)
+frontend/node_modules
+frontend/dist
+frontend/.vite
+frontend/*.tsbuildinfo
+
+# Documentation is not a runtime dependency
+docs
+MASTER_PROMPT.md
+CHANGELOG.md

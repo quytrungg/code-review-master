@@ -1,0 +1,18 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+alembic==1.14.0
+httpx==0.28.1
+anthropic==0.42.0
+cryptography==44.0.0
+python-dotenv==1.0.1
+python-multipart==0.0.20
+
+# No Vercel SDK: serverless ingest uses Starlette's BackgroundTasks. `vercel` (>=0.12) pulls
+# vercel-workflow, which requires pydantic>=2.12 and cannot be installed beside the pin above.
+
+# dev
+pytest==8.3.4

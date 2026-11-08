@@ -1,0 +1,19 @@
+# Keep the Vercel CLI upload small. Never exclude code-review/: the API reads it at runtime.
+
+.venv/
+**/__pycache__/
+**/*.pyc
+*.db
+.env
+backend/.env
+backend/.pytest_cache/
+backend/tests/
+code-review-foundations/
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+docs/
+Dockerfile
+docker-compose*.yml
+.git/
+.DS_Store
