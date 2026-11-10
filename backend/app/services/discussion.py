@@ -8,6 +8,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app.models.llm_call import LLMPurpose
 from app.models.review import (
     CodeReview,
     MessageRole,
@@ -112,11 +113,20 @@ async def discuss_threads(
         for entry in entries
     ]
 
-    async def call(prompt: str) -> str:
-        return await llm_service.generate(credentials, model, system_prompt, prompt)
+    async def call(entry: DiscussThread, prompt: str) -> llm_service.LLMResult:
+        return await llm_service.generate(
+            credentials,
+            model,
+            system_prompt,
+            prompt,
+            purpose=LLMPurpose.DISCUSS,
+            review_id=review.id,
+            thread_id=entry.thread_id,
+        )
 
     outcomes = await asyncio.gather(
-        *(call(prompt) for prompt in user_prompts), return_exceptions=True
+        *(call(entry, prompt) for entry, prompt in zip(entries, user_prompts)),
+        return_exceptions=True,
     )
 
     results: list[DiscussResult] = []
@@ -137,7 +147,7 @@ async def discuss_threads(
         thread.messages.append(
             ThreadMessage(
                 role=MessageRole.ASSISTANT,
-                content=outcome.strip(),
+                content=outcome.text.strip(),
                 round_number=round_numbers[entry.thread_id],
             )
         )

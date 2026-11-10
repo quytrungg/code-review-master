@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, utcnow
@@ -28,6 +28,9 @@ class Settings(Base):
     llm_key_id: Mapped[int | None] = mapped_column(
         ForeignKey("llm_keys.id", ondelete="SET NULL"), nullable=True
     )
+    # Soft monthly caps for the analytics page. NULL means uncapped; nothing is ever blocked.
+    monthly_token_budget: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    monthly_dollar_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )

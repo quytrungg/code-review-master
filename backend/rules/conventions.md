@@ -12,7 +12,8 @@ keys in `providers-and-keys.md`, data safety in `database.md`, PII in `privacy.m
 `vcs` (fetch/publish dispatch by host) · `github_service` · `gitlab_service` · `keys_service` ·
 `diff_parser` · `skill_loader` · `skills_service` · `prompts` · `llm_service` · `review_pipeline` ·
 `thread_sync` · `discussion` · `references` (`#N`) · `summarise` · `apply_service` · `progress` ·
-`auth_service` · `secrets`, `settings_service`.
+`auth_service` · `secrets`, `settings_service` · `ledger` (one `llm_calls` row per call, own
+session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line).
 
 ## Routes and errors
 
@@ -41,6 +42,15 @@ keys in `providers-and-keys.md`, data safety in `database.md`, PII in `privacy.m
   monkeypatch `app.services.<module>.<function>` instead of mocking HTTP.
 - **Logging** uses a module-level `logger = logging.getLogger(__name__)`; never `print`, never log a
   secret, prompt or full diff.
+
+## Costs
+
+`app/core/pricing.py` is the only price source: published list prices per 1M tokens, matched by
+model prefix, standard tier only. `ollama-local` is in `FREE_PROVIDERS` because it runs on the
+operator's hardware; every hosted provider — Ollama Cloud included, metered since 2026-08-31 — is
+priced. A model with no row returns `None` (the UI shows `—`), never `0`. When a row already in the
+ledger is mispriced, the repair is `scripts/backfill_llm_costs.py` (dry run by default), recorded in
+the phase plan — not a migration.
 
 ## Schema and time
 

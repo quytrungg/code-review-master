@@ -49,6 +49,7 @@ from app.services.diff_parser import (
     reviewable_files,
     snippet_contains_line,
 )
+from app.models.llm_call import LLMPurpose
 from app.services.llm_service import LLMError
 from app.services.progress import ERROR as PROGRESS_ERROR
 from app.services.progress import WARN as PROGRESS_WARN
@@ -371,10 +372,16 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
     )
     try:
         credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
-        raw = await llm_service.generate(
-            credentials, model, system_prompt, user_prompt, json_mode=True
+        outcome = await llm_service.generate(
+            credentials,
+            model,
+            system_prompt,
+            user_prompt,
+            json_mode=True,
+            purpose=LLMPurpose.INGEST,
+            review_id=review.id,
         )
-        result = llm_service.extract_review_result(raw)
+        result = llm_service.extract_review_result(outcome.text)
         payload = result.findings
     except keys_service.KeyError as exc:
         _fail(db, review, exc.detail)

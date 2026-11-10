@@ -1,11 +1,12 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { BookOpen, GitPullRequest, LogOut, Settings2, Sparkles } from "lucide-react";
+import { BarChart3, BookOpen, GitPullRequest, LogOut, Settings2, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
 
 const links = [
   { to: "/", label: "Reviews", icon: GitPullRequest, end: true },
   { to: "/skills", label: "Skills", icon: BookOpen, end: false },
+  { to: "/analytics", label: "Analytics", icon: BarChart3, end: false },
   { to: "/settings", label: "Settings", icon: Settings2, end: false },
 ];
 

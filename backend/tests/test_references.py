@@ -4,7 +4,7 @@ import json
 
 from app.models.review import MessageRole, ReviewThread, ThreadMessage
 from app.services.references import find_references, format_references_block
-from tests.fixtures import provision
+from tests.fixtures import as_result, provision
 from tests.test_review_pipeline import FINDINGS, configure
 
 
@@ -58,11 +58,11 @@ def test_discussion_with_a_reference_reaches_the_model(client, monkeypatch):
 
     captured: list[str] = []
 
-    async def capture(settings_row, model, system_prompt, user_prompt, json_mode=False):
+    async def capture(settings_row, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         captured.append(user_prompt)
         return "Same guard, different call site — fix both."
 
-    monkeypatch.setattr("app.services.llm_service.generate", capture)
+    monkeypatch.setattr("app.services.llm_service.generate", as_result(capture))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",

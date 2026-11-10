@@ -62,5 +62,6 @@ an apply with nothing pending is a `409`. Imported discussions and replies are G
 
 The review is created with no `body`; the comments carry the findings. Nothing to publish is an error
 (`422` when pruning leaves nothing, `502` when GitHub rejects), never an empty review, and dropped
-threads are never posted. The AI opinion is refreshed after each discussion submit; a failed pass
-keeps the previous verdict and warns.
+threads are never posted. One exception: an `APPROVE` with nothing pending is an approval with no
+comments — the PR is the whole message, and `COMMENT`/`REQUEST_CHANGES` keep the error. The AI opinion
+is refreshed after each discussion submit; a failed pass keeps the previous verdict and warns.

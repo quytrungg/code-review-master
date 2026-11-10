@@ -18,6 +18,9 @@ class SettingsUpdate(BaseModel):
 
     version_control_key_id: int | None = Field(default=None, ge=1)
     llm_key_id: int | None = Field(default=None, ge=1)
+    # Soft monthly caps for Analytics. `null` clears a cap; an absent field leaves it alone.
+    monthly_token_budget: int | None = Field(default=None, ge=0)
+    monthly_dollar_budget: float | None = Field(default=None, ge=0)
 
 
 class ActiveKeySummary(BaseModel):
@@ -32,6 +35,8 @@ class ActiveKeySummary(BaseModel):
 class SettingsRead(BaseModel):
     version_control_key_id: int | None = None
     llm_key_id: int | None = None
+    monthly_token_budget: int | None = None
+    monthly_dollar_budget: float | None = None
     version_control: ActiveKeySummary | None = None
     llm: ActiveKeySummary | None = None
     needs_setup: bool = True
@@ -46,6 +51,8 @@ class SettingsRead(BaseModel):
         return cls(
             version_control_key_id=row.version_control_key_id,
             llm_key_id=row.llm_key_id,
+            monthly_token_budget=getattr(row, "monthly_token_budget", None),
+            monthly_dollar_budget=getattr(row, "monthly_dollar_budget", None),
             version_control=(
                 ActiveKeySummary(
                     id=version_control.id,

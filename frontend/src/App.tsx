@@ -4,6 +4,7 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { SetupGate } from "@/components/SetupGate";
 import { AuthProvider } from "@/context/AuthContext";
 import { SettingsProvider } from "@/context/SettingsContext";
+import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ReviewDetailPage } from "@/pages/ReviewDetailPage";
@@ -29,6 +30,7 @@ function Workspace() {
           />
           <Route path="/setup" element={<SetupPage />} />
           <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/reviews/:id" element={<ReviewDetailPage />} />
           <Route

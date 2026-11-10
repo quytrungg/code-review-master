@@ -138,6 +138,17 @@ class ReviewThreadRead(BaseModel):
         )
 
 
+class ReviewUsage(BaseModel):
+    """What one review's model calls cost, in counts only — see `models/llm_call.py`."""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float | None = None
+    latency_ms: int = 0
+
+
 class CodeReviewSummary(BaseModel):
     id: int
     pr_url: str
@@ -150,6 +161,8 @@ class CodeReviewSummary(BaseModel):
     status: str
     verdict: str | None = None
     thread_count: int = 0
+    # Filled on detail responses (`routes/reviews.py::_detail`); the list stays a single query.
+    usage: ReviewUsage | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

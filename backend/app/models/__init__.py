@@ -6,6 +6,7 @@ from app.models.keys import (
     LLMKey,
     VersionControlKey,
 )
+from app.models.llm_call import LLMCall, LLMPurpose
 from app.models.review import (
     CodeReview,
     MessageRole,
@@ -23,6 +24,8 @@ from app.models.user import User, UserSession
 
 __all__ = [
     "CodeReview",
+    "LLMCall",
+    "LLMPurpose",
     "LLMKey",
     "LLM_DEFAULT_BASE_URLS",
     "LLM_PROVIDERS",

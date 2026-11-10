@@ -10,6 +10,9 @@ Two kinds of work go out in one call, and only what is pending:
 
 Rounds marked `resolved_no_reply` are never posted. Applying again after everything went out is a
 `409`, not a duplicate post.
+
+An `APPROVE` with nothing pending is the one exception to "nothing to publish is an error": it goes
+out as an approval with no inline comments, the same review the GitHub UI submits.
 """
 
 from __future__ import annotations
@@ -367,14 +370,19 @@ async def apply_review(
     selected = _select_threads(review, payload.thread_ids)
     initial = _initial_threads(selected)
     replies = _reply_rounds(selected)
+    # An approval is the one outcome that needs nothing to say: the PR itself is the message. It
+    # only applies when there is nothing else to publish — a run with queued replies keeps its
+    # existing behaviour of posting the replies without a review.
+    approval_only = payload.event == "APPROVE" and not initial and not replies
 
     if not initial and not replies:
         if review.status == ReviewStatus.APPLIED:
             raise PipelineError("Nothing is pending: everything in this review is already on GitHub.", 409)
-        raise PipelineError(
-            "Nothing is accepted yet: accept the findings you want to publish, then apply again.",
-            400,
-        )
+        if not approval_only:
+            raise PipelineError(
+                "Nothing is accepted yet: accept the findings you want to publish, then apply again.",
+                400,
+            )
 
     warnings: list[str] = []
     summarised = False
@@ -383,6 +391,7 @@ async def apply_review(
     replies_posted = 0
     review_url: str | None = None
 
+    comments: list[dict] = []
     if initial:
         # An accepted round is published exactly as the reviewer approved it; only threads without
         # an accepted text go through the summarise-and-collate fallback.
@@ -396,10 +405,7 @@ async def apply_review(
             else:
                 without_summary.append(thread)
 
-        comments: list[dict] = []
         build_warnings: list[str] = []
-        summarised = False
-        dropped: list[int] = []
         if without_summary:
             generated, build_warnings, summarised, dropped = await build_comments(
                 db, review, without_summary
@@ -424,6 +430,9 @@ async def apply_review(
                 422,
             )
 
+    if initial or approval_only:
+        # `comments` is empty only for an approval with nothing accepted: GitHub accepts that as a
+        # plain approval and GitLab records an approval without a discussion.
         try:
             pull = await vcs.fetch(key, ref)
             published, publish_warnings = await vcs.publish(
@@ -435,25 +444,27 @@ async def apply_review(
 
         comments_posted = published.get("comments_posted", 0)
         review_url = published.get("url")
-        await _backfill_root_ids(review, key, ref, published, initial, warnings)
 
-        for thread in initial:
-            first = thread.round(1)
-            if first is None:
-                continue
-            if thread.dropped:
-                first.status = RoundStatus.RESOLVED_NO_REPLY
-                thread.thread_status = ThreadStatus.RESOLVED
-                continue
-            first.status = RoundStatus.PUBLISHED
-            if not first.final_summary:
-                first.final_summary = thread.summary or _last_assistant_text(thread)
-            thread.thread_status = ThreadStatus.APPLIED
+        if initial:
+            await _backfill_root_ids(review, key, ref, published, initial, warnings)
 
-        # Summarisation may have withdrawn a thread that was not in the selection's dropped list.
-        for thread in initial:
-            if thread.dropped and thread.id not in dropped:
-                dropped.append(thread.id)
+            for thread in initial:
+                first = thread.round(1)
+                if first is None:
+                    continue
+                if thread.dropped:
+                    first.status = RoundStatus.RESOLVED_NO_REPLY
+                    thread.thread_status = ThreadStatus.RESOLVED
+                    continue
+                first.status = RoundStatus.PUBLISHED
+                if not first.final_summary:
+                    first.final_summary = thread.summary or _last_assistant_text(thread)
+                thread.thread_status = ThreadStatus.APPLIED
+
+            # Summarisation may have withdrawn a thread not in the selection's dropped list.
+            for thread in initial:
+                if thread.dropped and thread.id not in dropped:
+                    dropped.append(thread.id)
 
     for thread, item in replies:
         text = (item.final_summary or _last_assistant_text(thread, item.round_number)).strip()

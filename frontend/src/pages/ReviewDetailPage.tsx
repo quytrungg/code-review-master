@@ -119,7 +119,8 @@ export function ReviewDetailPage() {
         );
       }
       setNotice(
-        `Published${parts.length > 0 ? ` · ${parts.join(" · ")}` : ""}` +
+        (emptyApproval ? "Approved" : "Published") +
+          (parts.length > 0 ? ` · ${parts.join(" · ")}` : "") +
           (response.dropped.length > 0
             ? ` · ${response.dropped.length} withdrawn thread(s) excluded`
             : "") +
@@ -274,6 +275,15 @@ export function ReviewDetailPage() {
     return true;
   });
   const pending = pendingApplyCount(threads);
+  // An approval can go out on its own; a comment review cannot.
+  const emptyApproval = pending.total === 0 && verdict === "APPROVE" && review.status !== "applied";
+  const applyLabel = emptyApproval ? "Approve on GitHub" : applyButtonLabel(pending);
+  const applyDisabledReason =
+    pending.total === 0 && !emptyApproval
+      ? review.status === "applied"
+        ? "Everything in this review is already on the pull request."
+        : "Accept a finding or reply before applying."
+      : null;
   const threadOptions = threads.map((thread) => ({
     ordinal: thread.ordinal,
     file_path: thread.file_path,
@@ -382,8 +392,10 @@ export function ReviewDetailPage() {
           onApply={() => void applyToGithub()}
           submitting={submitting}
           applying={applying}
-          applyLabel={applyButtonLabel(pending)}
+          applyLabel={applyLabel}
           applyCount={pending.total}
+          allowEmptyApply={emptyApproval}
+          applyDisabledReason={applyDisabledReason}
           submitDisabledReason="Type a reply in any thread to enable bulk submit."
           error={actionError}
           notice={notice}

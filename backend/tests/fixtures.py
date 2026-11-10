@@ -1,3 +1,7 @@
+import inspect
+
+from app.services import llm_service
+
 SAMPLE_DIFF = """diff --git a/src/services/auth.py b/src/services/auth.py
 index 1111111..2222222 100644
 --- a/src/services/auth.py
@@ -31,6 +35,34 @@ PR_URL = "https://github.com/octo/example/pull/123"
 MR_URL = "https://gitlab.com/octo/example/-/merge_requests/7"
 
 GITHUB_TOKEN = "ghp_test_token_123456"
+
+
+def llm_result(text: str, **overrides) -> llm_service.LLMResult:
+    """What `llm_service.generate` returns: the text plus the counts the provider reported."""
+    fields = {
+        "text": text,
+        "prompt_tokens": 1200,
+        "completion_tokens": 300,
+        "latency_ms": 25,
+        "provider": "ollama-local",
+        "model": "llama3",
+    }
+    fields.update(overrides)
+    return llm_service.LLMResult(**fields)
+
+
+def as_result(responder):
+    """Adapt a text-returning `generate` stub to the LLMResult contract.
+
+    The stub keeps asserting on prompts and returning strings; only the wire shape changes.
+    """
+    async def generate(*args, **kwargs):
+        value = responder(*args, **kwargs)
+        if inspect.isawaitable(value):
+            value = await value
+        return value if isinstance(value, llm_service.LLMResult) else llm_result(value)
+
+    return generate
 
 
 def create_vcs_key(client, provider="github", token=GITHUB_TOKEN, base_url=None):

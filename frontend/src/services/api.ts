@@ -1,4 +1,5 @@
 import type {
+  AnalyticsResponse,
   AppSettings,
   ApplyResponse,
   AuthUser,
@@ -167,6 +168,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision, summary: summary ?? null }),
     }),
+
+  getAnalytics: (days = 30) => request<AnalyticsResponse>(`/analytics?days=${days}`),
 
   listModels: () => request<ModelCatalog>("/models"),
 

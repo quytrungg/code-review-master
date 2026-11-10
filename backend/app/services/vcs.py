@@ -138,7 +138,8 @@ async def publish(
     """Publish the review's inline comments. Returns `(result, warnings)`; raises `VCSError`.
 
     There is no review body: the comments carry the findings, and a review with nothing to say would
-    be noise on the pull request.
+    be noise on the pull request. An approval is the exception — it says something by itself, so an
+    empty `comments` list is a valid approval and nothing else.
     """
     if ref.vcs == VCS_GITHUB:
         return await _publish_github(key, ref, pull, event=event, comments=comments)

@@ -52,7 +52,7 @@ backend/      alembic 0001…0012 · scripts (db copy, key generation/rotation) 
               rules/ (§2)
 frontend/src/ pages · components (+ ui/) · context · services/api.ts · types · hooks · lib
 code-review/  bundled default skill library      code-review-foundations/  uploads (gitignored)
-docs/plans/   phase plans (§1)
+docs/plans/   phase plans (§1); INITIATIVES.md at the root is the ranked backlog
 Dockerfile · docker-entrypoint.sh   Python 3.12 image; seeds /data/code-review on first start
 ```
 

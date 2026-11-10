@@ -9,6 +9,112 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 24 — Ollama Cloud is metered, so its calls are no longer estimated at zero — 2026-11-10
+
+Plan: `docs/plans/phase_24_plan.md`. No schema change; `alembic_version` stays at head. The stored
+costs were repaired by `scripts/backfill_llm_costs.py --apply` (38 rows, see the plan).
+
+### Fixed
+
+- **Every Ollama Cloud call was estimated at `$0.00`.** `FREE_PROVIDERS` listed `ollama-cloud`, a
+  policy written when the cloud had no per-token price; Ollama moved to per-token billing on
+  2026-08-31. `ollama-cloud` is now priced like any other hosted provider and only `ollama-local`
+  (your own hardware) reports a genuine zero.
+- **Costs on the analytics page and the review header** for this account move from `~$0.00` to
+  `~$0.33` for the 800,844 tokens in the ledger, and the monthly dollar budget now uses that figure.
+
+### Added
+
+- **The published Ollama Cloud catalogue in `app/core/pricing.py`** — 21 models, USD per 1M tokens,
+  input/output, standard rates, checked against `https://ollama.com/pricing` on 2026-11-10.
+  `clef` is omitted: it publishes no output rate, which this table cannot express.
+- **`scripts/backfill_llm_costs.py`** — recomputes `estimated_cost_usd` from each row's own tokens.
+  Dry run by default; `--apply` writes; idempotent; rows whose model has no published price, and
+  failed calls with no tokens, are left untouched.
+
+### Changed
+
+- **`tests/test_llm_usage.py`**: the old test asserted that `ollama-cloud` costs nothing; it now
+  asserts the local daemon is free, a cloud model is priced by prefix, and an unpriced cloud model is
+  `None` rather than zero.
+- **README / `backend/rules/conventions.md`** describe the price source, the standard-tier caveat
+  and the repair script.
+
+---
+
+## Phase 23 — Approve a pull request with nothing to publish — 2026-11-10
+
+Plan: `docs/plans/phase_23_plan.md`. No schema change.
+
+### Changed
+
+- **`POST /api/reviews/{id}/apply`** accepts `{"event": "APPROVE"}` on a review where nothing is
+  accepted. Instead of the `400` "nothing is accepted yet", it publishes an approval with
+  `comments: []` — the review the GitHub UI's approve button creates — and records the verdict and
+  review URL as usual. `COMMENT` and `REQUEST_CHANGES` still need at least one accepted finding, and
+  accepted findings that pruning removes entirely are still a `422`.
+- **Action bar**: with nothing pending and `APPROVE` selected, the apply button reads **Approve on
+  GitHub** instead of sitting disabled at "Everything applied". A second apply with nothing pending
+  is the existing `409`.
+- **GitLab**: an approval with no comments posts no discussions and calls the approval endpoint;
+  a refusal is the usual warning, not a failure.
+
+---
+
+## Phase 22 — LLM call ledger, cost estimation and review-quality analytics — 2026-11-09
+
+Plan: `docs/plans/phase_22_plan.md` (requested as "phase 10", which was already the provider
+credentials plan; numbered 22 per `AGENTS.md` §1).
+
+### Added
+
+- **`llm_calls` (Alembic `0013`).** One row per provider call: purpose, provider, model, prompt and
+  completion tokens, `total_tokens`, estimated cost, latency, `ok` and `error_class`. Counts only —
+  no prompt, system prompt, diff, completion or reviewer message is stored. Indexes
+  `(review_id, created_at)` and `(created_at, provider, model, purpose)`.
+- **`LLMResult`.** `llm_service.generate` returns the dataclass (text, tokens, latency) instead of a
+  bare string, and records the call whether it succeeded or failed. Token extraction is a pure
+  function per provider: `claude_usage` (response body or `message_start`/`message_delta` events),
+  `openai_usage` (the terminal `usage` object), `ollama_usage` (`prompt_eval_count`/`eval_count`,
+  with missing or `0` counters stored as `NULL`).
+- **`app/core/pricing.py`.** USD per 1M tokens by model prefix, longest prefix first so
+  `gpt-4o-mini` beats `gpt-4o`. An unlisted model costs `NULL`; Ollama costs `0.0`.
+- **`services/ledger.py`.** The insert runs in its own `SessionLocal` and every failure is a logged
+  warning, so telemetry can never fail or roll back a review.
+- **`GET /api/analytics?days=30`.** Totals, per-provider/per-model/per-purpose breakdowns, median
+  and p95 latency, acceptance and push-back rates per model, and current-month budget utilisation.
+- **`settings.monthly_token_budget` / `monthly_dollar_budget`.** Soft caps: amber from 80%, red from
+  100%, nothing blocked.
+- **`/analytics`** (nav tab): KPI cards, model comparison table, purpose breakdown, budget manager.
+  **Dashboard**: 30-day activity bar and budget banner. **Review header**: `4 calls · 61.1k tokens ·
+  ~$0.06 · 2m 14s total`, refreshed after each action.
+
+### Changed
+
+- `review_pipeline`, `discussion`, `verdict` and `summarise` pass `purpose`, `review_id` (and
+  `thread_id` where one exists) into `generate`, so spend is attributable per activity.
+- `CodeReviewSummary.usage` (`calls`, tokens, estimated cost, total latency) is filled on every
+  detail response; the list endpoint stays a single query.
+- `PUT /api/settings` accepts the two caps: absent keeps the value, explicit `null` clears it.
+
+### Verified
+
+- `pytest -q` → 221 passed (191 before, 30 new across `test_llm_usage.py` and
+  `test_analytics_api.py`); `npm run build` green.
+- `0013` round-trips `upgrade` → `downgrade -1` → `upgrade` on a scratch SQLite file; both indexes
+  and both foreign keys (`CASCADE`, `SET NULL`) are present afterwards.
+- Live run on a scratch database with a stubbed provider (two findings, one discussion, one accept,
+  one apply): `POST /api/reviews` `202` → `draft` with `usage = {calls: 1, total_tokens: 9880,
+  estimated_cost_usd: 0.039}`; `POST /discuss` `200`, `POST /apply` `200`;
+  `GET /api/analytics?days=30` `200` reporting 3 calls, 16 260 tokens, `$0.0627` total
+  (ingest `$0.0390`, discuss `$0.0147`, verdict `$0.0090`), median 2 000 ms / p95 2 250 ms,
+  acceptance 50.0% (1 of 2 findings) and push-back 50.0%; the header line read
+  `3 calls · 16.3k tokens · ~$0.06 · 6s total`.
+- With `ledger.SessionLocal` forced to raise, a full ingest still finished `draft` with both
+  threads and logged one warning.
+
+---
+
 ## Phase 15 — Vercel + Supabase deployment, Python 3.12 and a database-backed progress bus — 2026-11-08
 
 Plan: `docs/plans/phase_15_plan.md`.

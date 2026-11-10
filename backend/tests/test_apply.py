@@ -6,7 +6,7 @@ import pytest
 
 from app.services import github_service, llm_service
 from app.services.github_service import GitHubError
-from tests.fixtures import accept_findings, provision
+from tests.fixtures import accept_findings, as_result, provision
 from tests.test_review_pipeline import FINDINGS, configure
 
 PR_URL = "https://github.com/octo/example/pull/123"
@@ -91,6 +91,80 @@ def test_apply_refuses_a_review_where_nothing_is_accepted(client, monkeypatch):
     assert client.get(f"/api/reviews/{review['id']}").json()["status"] == "draft"
 
 
+def test_approve_with_nothing_accepted_publishes_an_empty_approval(client, monkeypatch):
+    review = seed_review(client, monkeypatch)
+    url = "https://github.com/octo/example/pull/123#pullrequestreview-9"
+    calls = stub_post(monkeypatch, [{"id": 9, "html_url": url}])
+
+    response = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert len(calls) == 1
+    assert calls[0]["payload"]["event"] == "APPROVE"
+    assert calls[0]["payload"]["comments"] == []
+    assert body["comments_posted"] == 0
+    assert body["github_review_url"] == url
+    assert body["review"]["verdict"] == "APPROVE"
+    assert body["review"]["status"] == "applied"
+    # Nothing was accepted on the way out: the findings stay undecided for a later apply.
+    statuses = [thread["rounds"][0]["status"] for thread in body["review"]["threads"]]
+    assert set(statuses) == {"drafting"}
+
+
+def test_approve_with_nothing_pending_twice_is_409(client, monkeypatch):
+    review = seed_review(client, monkeypatch)
+    stub_post(monkeypatch, [{"html_url": "https://github.com/octo/example/pull/123#pullrequestreview-9"}])
+
+    first = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert first.status_code == 200, first.text
+    again = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert again.status_code == 409
+
+
+def test_approve_with_a_queued_reply_posts_no_review(client, monkeypatch):
+    """An approval must not fire on the way to posting replies — replies stay replies."""
+    from tests.conftest import start_review
+    from tests.test_review_pipeline import FINDINGS
+    from tests.test_thread_sync import comment
+
+    configure(monkeypatch, json.dumps(FINDINGS), comments=[comment(501, "This is unbounded.")])
+    provision(client)
+    review = start_review(client, PR_URL, "ollama-local:llama3")
+    imported = next(t for t in review["threads"] if t["origin"] == "GITHUB_EXISTING")
+
+    discussed = client.post(
+        f"/api/reviews/{review['id']}/discuss",
+        json={"threads": [{"thread_id": imported["id"], "message": "Fair point — fixed."}]},
+    )
+    assert discussed.status_code == 200, discussed.text
+    reopened = next(
+        t for t in discussed.json()["review"]["threads"] if t["id"] == imported["id"]
+    )
+    round_id = reopened["rounds"][-1]["id"]
+    decided = client.post(
+        f"/api/reviews/{review['id']}/rounds/{round_id}/decision",
+        json={"decision": "accept", "summary": "Fixed in 9f1c."},
+    )
+    assert decided.status_code == 200, decided.text
+
+    review_calls = stub_post(monkeypatch, [{"html_url": "unused"}])
+    replies: list[tuple] = []
+
+    async def fake_reply(token, repo_full_name, number, comment_id, body, base_url=None):
+        replies.append((comment_id, body))
+        return {"id": 900}
+
+    monkeypatch.setattr(github_service, "post_reply", fake_reply)
+
+    response = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert response.status_code == 200, response.text
+    assert review_calls == []
+    assert replies == [(501, "Fixed in 9f1c.")]
+    assert response.json()["comments_posted"] == 0
+    assert response.json()["replies_posted"] == 1
+
+
 def test_apply_only_exports_selected_threads(client, monkeypatch):
     review = accept_findings(client, seed_review(client, monkeypatch))
     calls = stub_post(monkeypatch, [{"html_url": "https://github.com/octo/example/pull/123#pullrequestreview-2"}])
@@ -110,10 +184,10 @@ def test_accepted_text_is_exported_not_the_transcript(client, monkeypatch):
     thread_id = review["threads"][0]["id"]
     round_id = review["threads"][0]["rounds"][0]["id"]
 
-    async def reply(settings_row, model, system_prompt, user_prompt, json_mode=False):
+    async def reply(settings_row, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         return "An allowlist is the right fix."
 
-    monkeypatch.setattr(llm_service, "generate", reply)
+    monkeypatch.setattr(llm_service, "generate", as_result(reply))
     client.post(
         f"/api/reviews/{review['id']}/discuss",
         json={"threads": [{"thread_id": thread_id, "message": "Could we allowlist instead?"}]},

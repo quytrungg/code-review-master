@@ -4,7 +4,7 @@ import json
 
 from app.services import github_service, llm_service
 from app.services.pull_request import PullRequestInfo
-from tests.fixtures import PR_URL, SAMPLE_DIFF, provision
+from tests.fixtures import PR_URL, SAMPLE_DIFF, llm_result, provision
 
 FINDINGS = [
     {
@@ -66,8 +66,8 @@ def configure(monkeypatch, llm_payload: str, comments=None):
     monkeypatch.setattr(llm_service, "generate", lambda *args, **kwargs: _result(llm_payload))
 
 
-async def _result(payload: str) -> str:
-    return payload
+async def _result(payload: str):
+    return llm_result(payload)
 
 
 def test_ingest_creates_anchored_threads(client, monkeypatch):

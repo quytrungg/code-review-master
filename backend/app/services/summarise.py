@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
+from app.models.llm_call import LLMPurpose
 from app.models.review import CodeReview, MessageRole, ReviewThread, ThreadRound
 from app.services import keys_service, llm_service, prompts, skill_loader, skills_service
 from app.services.diff_parser import language_hints
@@ -141,10 +142,16 @@ async def summarise_threads(
     user_prompt = build_summarise_prompt(threads[:MAX_THREADS_PER_CALL])
 
     try:
-        raw = await llm_service.generate(
-            credentials, model, system_prompt, user_prompt, json_mode=True
+        outcome = await llm_service.generate(
+            credentials,
+            model,
+            system_prompt,
+            user_prompt,
+            json_mode=True,
+            purpose=LLMPurpose.SUMMARISE,
+            review_id=review.id,
         )
-        document = llm_service.extract_json_document(raw)
+        document = llm_service.extract_json_document(outcome.text)
     except LLMError as exc:
         logger.warning("Summariser failed: %s", exc)
         return None
@@ -243,10 +250,17 @@ async def summarise_round(
     user_prompt = build_round_summary_prompt(review, thread, round_row)
 
     try:
-        raw = await llm_service.generate(
-            credentials, model, system_prompt, user_prompt, json_mode=True
+        outcome = await llm_service.generate(
+            credentials,
+            model,
+            system_prompt,
+            user_prompt,
+            json_mode=True,
+            purpose=LLMPurpose.SUMMARISE,
+            review_id=review.id,
+            thread_id=thread.id,
         )
-        document = llm_service.extract_json_document(raw)
+        document = llm_service.extract_json_document(outcome.text)
     except LLMError as exc:
         logger.warning("Round summary failed: %s", exc)
         return None, [f"Could not summarise this round ({exc}); the copilot's text was kept."]

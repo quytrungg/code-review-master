@@ -7,7 +7,7 @@ import json
 from app.services import github_service, llm_service
 from app.services.apply_service import pending_round_count
 from app.services.thread_sync import group_comments
-from tests.fixtures import MR_URL, accept_findings, provision
+from tests.fixtures import MR_URL, accept_findings, as_result, provision
 from tests.test_review_pipeline import FINDINGS, configure
 
 PR_URL = "https://github.com/octo/example/pull/123"
@@ -110,14 +110,14 @@ def configure_llm(monkeypatch, summaries: dict[int, str] | None = None):
             }
         )
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "## thread_id" in user_prompt:
             if summary_payload is None:
                 raise llm_service.LLMError("summariser unavailable")
             return summary_payload
         return payload
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
 
 def seed(client, monkeypatch, comments):
@@ -298,7 +298,7 @@ def test_accept_summarises_the_round_before_it_is_posted(client, monkeypatch):
     thread = thread_by_origin(synced["review"], "GITHUB_EXISTING")[0]
     round_id = thread["rounds"][1]["id"]
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Write the single GitHub comment" in system_prompt:
             return json.dumps({"summary": "**Fixed** — the query is capped at 50."})
         if "## thread_id" in user_prompt:
@@ -307,7 +307,7 @@ def test_accept_summarises_the_round_before_it_is_posted(client, monkeypatch):
             return json.dumps(FINDINGS)
         return "Chat prose: yes, we cap it in the controller, so the scan is bounded now."
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     discussed = client.post(
         f"/api/reviews/{review['id']}/discuss",
@@ -341,11 +341,11 @@ def test_accept_stores_the_reviewers_text_without_calling_the_model(client, monk
 
     calls: list[str] = []
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         calls.append(system_prompt)
         return json.dumps(FINDINGS)
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     accepted = client.post(
         f"/api/reviews/{review['id']}/rounds/{round_id}/decision",
@@ -363,12 +363,12 @@ def test_accept_falls_back_to_the_copilot_text_when_summarising_fails(client, mo
     ai = thread_by_origin(review, "AI_GENERATED")[0]
     round_id = ai["rounds"][0]["id"]
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Write the single GitHub comment" in system_prompt:
             raise llm_service.LLMError("provider down")
         return json.dumps(FINDINGS)
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     accepted = client.post(
         f"/api/reviews/{review['id']}/rounds/{round_id}/decision",
@@ -393,12 +393,12 @@ def test_apply_does_not_resummarise_an_accepted_finding(client, monkeypatch):
         == 200
     )
 
-    async def summariser(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def summariser(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Write the single GitHub comment" in system_prompt:
             return json.dumps({"summary": "**High** — accepted wording."})
         return json.dumps(FINDINGS)
 
-    monkeypatch.setattr(llm_service, "generate", summariser)
+    monkeypatch.setattr(llm_service, "generate", as_result(summariser))
     accepted = client.post(
         f"/api/reviews/{review['id']}/rounds/{first['rounds'][0]['id']}/decision",
         json={"decision": "accept"},
@@ -408,7 +408,7 @@ def test_apply_does_not_resummarise_an_accepted_finding(client, monkeypatch):
     async def explode(*args, **kwargs):
         raise llm_service.LLMError("the apply pass must not run")
 
-    monkeypatch.setattr(llm_service, "generate", explode)
+    monkeypatch.setattr(llm_service, "generate", as_result(explode))
     review_calls = stub_review_post(monkeypatch)
     stub_review_comments(monkeypatch, [])
 
@@ -525,7 +525,7 @@ def test_discussing_a_published_round_opens_a_draft_round(client, monkeypatch):
     async def prose(*args, **kwargs):
         return "The cap is enforced in the controller."
 
-    monkeypatch.setattr(llm_service, "generate", prose)
+    monkeypatch.setattr(llm_service, "generate", as_result(prose))
     discussed = client.post(
         f"/api/reviews/{review['id']}/discuss",
         json={"threads": [{"thread_id": thread_id, "message": "Draft a reply to the reviewer."}]},

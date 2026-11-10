@@ -165,6 +165,25 @@ def test_publish_keeps_going_when_one_inline_comment_is_rejected(monkeypatch):
     assert any("approval" in warning for warning in warnings)
 
 
+def test_publish_approves_without_comments(monkeypatch):
+    calls: list[tuple] = []
+
+    async def approve(token, base_url, project, iid):
+        calls.append(("approve", iid))
+        return True, "Approved"
+
+    monkeypatch.setattr(gitlab_service, "approve", approve)
+
+    ref = vcs.PullRef(vcs="gitlab", host="gitlab.example.com", project="group/sub/project", number=7)
+    result, warnings = asyncio.run(
+        vcs.publish(_key(), ref, _pull(), event="APPROVE", comments=[])
+    )
+
+    assert calls == [("approve", 7)]
+    assert result == {"url": MR_URL, "comments_posted": 0}
+    assert warnings == []
+
+
 def test_gitlab_key_is_accepted_by_the_keys_api(client):
     key = create_vcs_key(client, provider="gitlab", token="glpat-abcdef123456")
     assert key["provider"] == "gitlab"

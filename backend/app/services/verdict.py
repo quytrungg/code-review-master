@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
+from app.models.llm_call import LLMPurpose
 from app.models.review import CodeReview
 from app.services import keys_service, llm_service, prompts, skill_loader, skills_service
 from app.services.diff_parser import language_hints
@@ -102,10 +103,16 @@ async def evaluate(db: Session, review: CodeReview) -> VerdictOutcome | None:
     user_prompt = prompts.build_verdict_prompt(threads)
 
     try:
-        raw = await llm_service.generate(
-            credentials, model, system_prompt, user_prompt, json_mode=True
+        outcome = await llm_service.generate(
+            credentials,
+            model,
+            system_prompt,
+            user_prompt,
+            json_mode=True,
+            purpose=LLMPurpose.VERDICT,
+            review_id=review.id,
         )
-        document = llm_service.extract_json_document(raw)
+        document = llm_service.extract_json_document(outcome.text)
     except LLMError as exc:
         logger.warning("Verdict re-evaluation failed for review %s: %s", review.id, exc)
         return None

@@ -24,7 +24,7 @@ from app.schemas.review import (
     RoundDecisionResponse,
     SyncResponse,
 )
-from app.services import keys_service, thread_sync, vcs
+from app.services import analytics, keys_service, thread_sync, vcs
 from app.services.apply_service import apply_review, decide_round
 from app.services.discussion import discuss_threads
 from app.services.progress import bus
@@ -37,6 +37,13 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+
+
+def _detail(db: Session, review: CodeReview) -> CodeReviewDetail:
+    """One review plus its call usage, so the header line is fresh after every action."""
+    detail = CodeReviewDetail.from_row(review)
+    detail.usage = analytics.review_usage(db, review.id)
+    return detail
 
 
 def _owned_review(db: Session, user_id: int, review_id: int) -> CodeReview:
@@ -107,7 +114,7 @@ def get_review(
     review_id: int, user: CurrentUser, db: Session = Depends(get_db)
 ) -> CodeReviewDetail:
     mark_stale_running_reviews()
-    return CodeReviewDetail.from_row(_owned_review(db, user.id, review_id))
+    return _detail(db, _owned_review(db, user.id, review_id))
 
 
 @router.post("/{review_id}/discuss", response_model=DiscussResponse)
@@ -124,7 +131,7 @@ async def discuss_review(
     except PipelineError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return DiscussResponse(
-        review=CodeReviewDetail.from_row(review),
+        review=_detail(db, review),
         results=results,
         opinion_refreshed=refreshed,
         warnings=warnings,
@@ -146,7 +153,7 @@ async def apply_to_github(
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
     return ApplyResponse(
-        review=CodeReviewDetail.from_row(review),
+        review=_detail(db, review),
         github_review_url=meta["github_review_url"],
         comments_posted=meta["comments_posted"],
         replies_posted=meta.get("replies_posted", 0),
@@ -179,7 +186,7 @@ async def sync_review(
         raise HTTPException(status_code=exc.status_code or 502, detail=exc.message) from exc
 
     return SyncResponse(
-        review=CodeReviewDetail.from_row(review),
+        review=_detail(db, review),
         new_threads=outcome.new_threads,
         new_rounds=outcome.new_rounds,
         warnings=outcome.warnings,
@@ -201,4 +208,4 @@ async def decide_round_state(
         )
     except PipelineError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return RoundDecisionResponse(review=CodeReviewDetail.from_row(review), warnings=warnings)
+    return RoundDecisionResponse(review=_detail(db, review), warnings=warnings)

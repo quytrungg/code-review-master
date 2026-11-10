@@ -45,6 +45,9 @@ export interface ActiveKeySummary {
 export interface AppSettings {
   version_control_key_id: number | null;
   llm_key_id: number | null;
+  // Soft monthly caps for Analytics; `null` means uncapped.
+  monthly_token_budget: number | null;
+  monthly_dollar_budget: number | null;
   version_control: ActiveKeySummary | null;
   llm: ActiveKeySummary | null;
   needs_setup: boolean;
@@ -56,6 +59,8 @@ export interface AppSettings {
 export interface SettingsUpdate {
   version_control_key_id?: number | null;
   llm_key_id?: number | null;
+  monthly_token_budget?: number | null;
+  monthly_dollar_budget?: number | null;
 }
 
 export interface KeyTestResult {
@@ -185,6 +190,98 @@ export interface ProgressEvent {
   data?: Record<string, unknown> | null;
 }
 
+/** What one review's model calls cost, in counts only. */
+export interface ReviewUsage {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+  latency_ms: number;
+}
+
+export type LLMPurpose = "ingest" | "discuss" | "verdict" | "summarise";
+export type BudgetLevel = "ok" | "warn" | "over";
+
+export interface AnalyticsTotals {
+  calls: number;
+  failed_calls: number;
+  /** Calls whose model had a price; the denominator behind any dollar figure. */
+  priced_calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+}
+
+export interface AnalyticsLatency {
+  median_ms: number | null;
+  p95_ms: number | null;
+  avg_ms: number | null;
+}
+
+export interface ProviderUsage {
+  provider: string;
+  calls: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+}
+
+export interface ModelUsage {
+  provider: string;
+  /** Full model id, `<provider>:<name>`, as stored on the review. */
+  model: string;
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+  avg_latency_ms: number | null;
+  findings: number;
+  accepted: number;
+  acceptance_rate: number | null;
+  pushed_back: number;
+  pushback_rate: number | null;
+}
+
+export interface PurposeUsage {
+  purpose: LLMPurpose;
+  calls: number;
+  total_tokens: number;
+  estimated_cost_usd: number | null;
+}
+
+export interface QualitySummary {
+  findings: number;
+  accepted: number;
+  acceptance_rate: number | null;
+  pushed_back: number;
+  pushback_rate: number | null;
+}
+
+export interface BudgetStatus {
+  month: string;
+  token_budget: number | null;
+  dollar_budget: number | null;
+  tokens_used: number;
+  dollars_used: number | null;
+  token_pct: number | null;
+  dollar_pct: number | null;
+  level: BudgetLevel;
+}
+
+export interface AnalyticsResponse {
+  window_days: number;
+  generated_at: string | null;
+  totals: AnalyticsTotals;
+  latency: AnalyticsLatency;
+  by_provider: ProviderUsage[];
+  by_model: ModelUsage[];
+  by_purpose: PurposeUsage[];
+  quality: QualitySummary;
+  budget: BudgetStatus;
+}
+
 export interface CodeReviewSummary {
   id: number;
   pr_url: string;
@@ -197,6 +294,8 @@ export interface CodeReviewSummary {
   status: ReviewStatus;
   verdict: ReviewVerdict | null;
   thread_count: number;
+  /** Present on detail responses; `null` in the list. */
+  usage: ReviewUsage | null;
   created_at: string | null;
   updated_at: string | null;
 }

@@ -29,6 +29,44 @@ export function formatAbsolute(iso: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
 
+/** 940 → "940", 61_100 → "61.1k", 2_400_000 → "2.4M". */
+export function compactNumber(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const scaled = (divisor: number) => (value / divisor).toFixed(1).replace(/\.0$/, "");
+  if (Math.abs(value) < 1000) return String(Math.round(value));
+  if (Math.abs(value) < 1_000_000) return `${scaled(1000)}k`;
+  return `${scaled(1_000_000)}M`;
+}
+
+/** An *estimated* dollar figure; never render a bare `$` for a model with no price. */
+export function estimatedCost(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  if (value === 0) return "~$0.00";
+  return `~$${value >= 0.01 ? value.toFixed(2) : value.toFixed(4)}`;
+}
+
+/** A plain dollar amount (a cap, not an estimate). */
+export function formatUsd(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `$${value.toFixed(2)}`;
+}
+
+export function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  return `${value.toFixed(1)}%`;
+}
+
+/** 820 → "820ms", 8_200 → "8.2s", 134_000 → "2m 14s", 3_600_000 → "1h 00m". */
+export function formatDuration(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return "—";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(Math.round(seconds % 60)).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
 export function shortSha(sha: string | null | undefined): string {
   if (!sha) return "";
   return sha.slice(0, 7);

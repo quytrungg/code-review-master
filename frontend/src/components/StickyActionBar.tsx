@@ -29,6 +29,8 @@ export interface StickyActionBarProps {
   applying?: boolean;
   applyLabel?: string;
   applyCount?: number;
+  /** An approval needs nothing to publish: the PR is approved with no inline comments. */
+  allowEmptyApply?: boolean;
   submitDisabledReason?: string | null;
   applyDisabledReason?: string | null;
   error?: string | null;
@@ -49,6 +51,7 @@ export function StickyActionBar({
   applying = false,
   applyLabel = "Apply to GitHub",
   applyCount = 0,
+  allowEmptyApply = false,
   submitDisabledReason = null,
   applyDisabledReason = null,
   error = null,
@@ -149,7 +152,9 @@ export function StickyActionBar({
             </Button>
             <Button
               onClick={onApply}
-              disabled={applying || applyCount === 0 || Boolean(applyDisabledReason)}
+              disabled={
+                applying || Boolean(applyDisabledReason) || (applyCount === 0 && !allowEmptyApply)
+              }
               title={applyDisabledReason ?? undefined}
             >
               {applying ? (

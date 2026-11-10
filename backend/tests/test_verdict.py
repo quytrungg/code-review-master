@@ -7,7 +7,7 @@ import pytest
 from app.services import llm_service, verdict
 from app.services.prompts import build_verdict_prompt
 from app.services.verdict import VerdictOutcome, parse_outcome
-from tests.fixtures import PR_URL, provision
+from tests.fixtures import PR_URL, as_result, provision
 from tests.test_review_pipeline import FINDINGS, configure
 
 
@@ -65,14 +65,14 @@ def test_discussion_refreshes_the_opinion(client, monkeypatch):
     review = _seed(client, monkeypatch)
     thread_id = review["threads"][0]["id"]
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Review state" in user_prompt:
             return json.dumps(
                 {"verdict": "APPROVE", "confidence": 88, "rationale": "Both findings were resolved."}
             )
         return "Agreed — this is fine as written."
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",
@@ -97,12 +97,12 @@ def test_failed_verdict_pass_keeps_the_previous_opinion(client, monkeypatch):
     review = _seed(client, monkeypatch)
     thread_id = review["threads"][0]["id"]
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Review state" in user_prompt:
             raise llm_service.LLMError("provider went away")
         return "Noted."
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",
@@ -123,12 +123,12 @@ def test_unparsable_verdict_answer_is_not_applied(client, monkeypatch):
     review = _seed(client, monkeypatch)
     thread_id = review["threads"][0]["id"]
 
-    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False):
+    async def generate(credentials, model, system_prompt, user_prompt, json_mode=False, **kwargs):
         if "Review state" in user_prompt:
             return "I think it looks good!"
         return "Sure."
 
-    monkeypatch.setattr(llm_service, "generate", generate)
+    monkeypatch.setattr(llm_service, "generate", as_result(generate))
 
     body = client.post(
         f"/api/reviews/{review['id']}/discuss",

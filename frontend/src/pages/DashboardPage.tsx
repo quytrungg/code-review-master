@@ -1,13 +1,60 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { GitPullRequest, Loader2, RefreshCw } from "lucide-react";
+import { ArrowRight, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { NewReviewPanel } from "@/components/NewReviewPanel";
 import { api, ApiError } from "@/services/api";
-import { relativeTime } from "@/lib/utils";
-import type { CodeReviewSummary } from "@/types";
+import {
+  compactNumber,
+  estimatedCost,
+  formatDuration,
+  formatPercent,
+  formatUsd,
+  relativeTime,
+} from "@/lib/utils";
+import type { AnalyticsResponse, BudgetStatus, CodeReviewSummary } from "@/types";
+
+/** The one line the caps breach, in the order a reader cares about it. */
+function budgetWarnings(budget: BudgetStatus): string[] {
+  const warnings: string[] = [];
+  if (budget.token_pct !== null && budget.token_pct >= 80) {
+    warnings.push(
+      `${formatPercent(budget.token_pct)} of the monthly token budget (${compactNumber(
+        budget.tokens_used,
+      )} of ${compactNumber(budget.token_budget)})`,
+    );
+  }
+  if (budget.dollar_pct !== null && budget.dollar_pct >= 80) {
+    warnings.push(
+      `${formatPercent(budget.dollar_pct)} of the monthly spend cap (${estimatedCost(
+        budget.dollars_used,
+      )} of ${formatUsd(budget.dollar_budget)})`,
+    );
+  }
+  return warnings;
+}
+
+function BudgetAlert({ budget }: { budget: BudgetStatus }) {
+  const warnings = budgetWarnings(budget);
+  if (warnings.length === 0) return null;
+  const over = budget.level === "over";
+  return (
+    <div
+      className={
+        over
+          ? "rounded-xl border border-danger/40 bg-danger/10 px-4 py-2.5 text-xs text-danger"
+          : "rounded-xl border border-warning/40 bg-warning/10 px-4 py-2.5 text-xs text-warning"
+      }
+    >
+      <span className="font-medium">{over ? "Monthly budget reached" : "Approaching the monthly budget"}</span>
+      {" — "}
+      {warnings.join(" · ")}. Reviews still run; raise the cap in Analytics when you mean to keep
+      going.
+    </div>
+  );
+}
 
 const statusTone = (status: CodeReviewSummary["status"]) =>
   status === "applied"
@@ -33,6 +80,7 @@ const statusLabel = (status: CodeReviewSummary["status"]) =>
 
 export function DashboardPage() {
   const [reviews, setReviews] = useState<CodeReviewSummary[]>([]);
+  const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +88,9 @@ export function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      setReviews(await api.listReviews());
+      const [list, usage] = await Promise.all([api.listReviews(), api.getAnalytics(30)]);
+      setReviews(list);
+      setAnalytics(usage);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load reviews");
     } finally {
@@ -67,6 +117,28 @@ export function DashboardPage() {
       </header>
 
       <NewReviewPanel />
+
+      {analytics ? (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-surfaceMuted/40 px-4 py-2.5 text-xs">
+            <span className="text-inkMuted">
+              <span className="font-medium text-ink">30-day activity</span>
+              {" — "}
+              {estimatedCost(analytics.totals.estimated_cost_usd)} est. spend ·{" "}
+              {compactNumber(analytics.totals.total_tokens)} tokens ·{" "}
+              {formatPercent(analytics.quality.acceptance_rate)} acceptance ·{" "}
+              {formatDuration(analytics.latency.median_ms)} median latency
+            </span>
+            <Link
+              to="/analytics"
+              className="inline-flex items-center gap-1 text-accent transition-colors hover:text-accentStrong"
+            >
+              View full analytics <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </div>
+          <BudgetAlert budget={analytics.budget} />
+        </div>
+      ) : null}
 
       <Card>
         <CardHeader

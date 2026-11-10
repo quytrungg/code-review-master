@@ -59,6 +59,14 @@ def update_settings(
             )
     except KeyError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    # Soft caps: an absent field keeps the current value, an explicit null clears it.
+    caps = {"monthly_token_budget", "monthly_dollar_budget"}
+    if caps & fields:
+        row = get_or_create(db, user.id)
+        for name in caps & fields:
+            setattr(row, name, getattr(payload, name))
+        db.commit()
     return _read(db, user.id)
 
 

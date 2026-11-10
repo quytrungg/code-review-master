@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from app.services import llm_service
-from tests.fixtures import PR_URL, provision
+from tests.fixtures import PR_URL, as_result, provision
 from tests.test_review_pipeline import FINDINGS, configure
 
 TOKEN = "ghp_test_token_123456"
@@ -29,7 +29,7 @@ def test_batch_discussion_adds_user_and_assistant_messages(client, monkeypatch):
         assert "Reviewer (user)" in user_prompt
         return "You are right — an allowlist is safer here."
 
-    monkeypatch.setattr(llm_service, "generate", reply)
+    monkeypatch.setattr(llm_service, "generate", as_result(reply))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",
@@ -68,7 +68,7 @@ def test_partial_failure_keeps_the_successful_reply(client, monkeypatch):
             raise llm_service.LLMError("Ollama does not have the model 'nope'.")
         return "Fixed answer."
 
-    monkeypatch.setattr(llm_service, "generate", flaky)
+    monkeypatch.setattr(llm_service, "generate", as_result(flaky))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",
@@ -101,7 +101,7 @@ def test_foreign_thread_id_is_rejected(client, monkeypatch):
     async def reply(settings_row, model, system_prompt, user_prompt, **kwargs):
         return "ok"
 
-    monkeypatch.setattr(llm_service, "generate", reply)
+    monkeypatch.setattr(llm_service, "generate", as_result(reply))
 
     response = client.post(
         f"/api/reviews/{first['id']}/discuss",
@@ -131,7 +131,7 @@ def test_discussion_survives_model_failure_and_keeps_status_draft(client, monkey
     async def boom(settings_row, model, system_prompt, user_prompt, **kwargs):
         raise llm_service.LLMError("connection refused")
 
-    monkeypatch.setattr(llm_service, "generate", boom)
+    monkeypatch.setattr(llm_service, "generate", as_result(boom))
 
     response = client.post(
         f"/api/reviews/{review['id']}/discuss",

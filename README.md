@@ -117,7 +117,7 @@ GitHub PR  ──►  diff parser  ──►  skill library + prompt  ──► 
 - **Delta apply**: only pending work is published. Unposted AI findings travel as one formal review
   (the GitHub comment ids are read back so later replies thread correctly); queued rounds are posted
   as replies inside their own conversations. Nothing is posted twice, and an apply with nothing
-  pending is a `409`.
+  pending is a `409` — unless the event is `APPROVE`, which publishes an approval with no comments.
 - **Filter bar** (`All` / `AI Findings` / `GitHub Threads` / `Needs Response`) with live counts;
   AI cards carry a violet rail and `🤖 AI Finding #N`, imported threads a slate rail and
   `🐙 GitHub Discussion #N · by @author`. Filtering never renumbers.
@@ -135,7 +135,9 @@ GitHub PR  ──►  diff parser  ──►  skill library + prompt  ──► 
   GitHub comment and can withdraw findings the model conceded on. Withdrawn threads are not
   posted; if the pass fails, publishing still happens with the last message of each thread.
 - **No review body.** Apply publishes the inline comments only, so a review carries exactly the
-  findings you accepted — nothing is posted until a finding is accepted.
+  findings you accepted — nothing is posted until a finding is accepted. The one exception is an
+  approval: an `APPROVE` with nothing accepted submits an approval with no comments, like the
+  GitHub UI's own button.
 
 **Publishing**
 
@@ -143,11 +145,34 @@ GitHub PR  ──►  diff parser  ──►  skill library + prompt  ──► 
 - Inline comments are re-validated against the **current** PR diff before posting, because a
   moved branch would otherwise make GitHub reject the entire review.
 - No silent summary-only fallback: if every comment is pruned or rejected, the apply returns
-  `422`/`502` and posts nothing, rather than publishing an empty review.
+  `422`/`502` and posts nothing, rather than publishing a comment review with nothing in it.
+- An approval needs no findings. With `APPROVE` selected and nothing accepted, the apply button
+  reads **Approve on GitHub** and submits an approval with no inline comments; `COMMENT` and
+  `REQUEST_CHANGES` still require something to say.
 - Applied reviews record the verdict and the GitHub review URL. Applying again is allowed when
   something is pending (a queued reply, or findings added since) and posts only that; with nothing
   pending it is a `409`.
 - Ingestion warnings (skipped files, truncation, dropped findings) are surfaced in the UI.
+
+**Telemetry and analytics**
+
+- **Every model call is recorded** — purpose, provider, model, prompt/completion tokens, estimated
+  cost, latency and outcome — in `llm_calls`. Counts only: no prompt, diff or completion is ever
+  stored there.
+- **Usage line per review**: `4 calls · 61.1k tokens · ~$0.09 · 2m 14s total` beside the model
+  badge, refreshed after every discussion, decision and apply.
+- **Dashboard strip**: 30-day spend, tokens, acceptance rate and median latency above the review
+  list, with a link to the full page.
+- **`/analytics`**: KPI cards, a model comparison table (calls, tokens in/out, est. cost, average
+  latency, acceptance and push-back rates), a purpose breakdown (ingest / discuss / verdict /
+  summarise) and soft monthly token/dollar caps with an 80% warning and a 100% red state.
+- **Costs are estimates** from `app/core/pricing.py`, matched by model prefix at the provider's
+  published list price. Ollama Cloud has been billed per token since 2026-08-31, so its calls are
+  priced like Claude's; `ollama-local` reports `~$0.00` because it runs on your own hardware. A model
+  with no published price reports tokens and `—` for money rather than a made-up number. Standard
+  rates only: off-peak and cached-input discounts are not modelled.
+- **A ledger failure never breaks a review**: the insert runs in its own session and a failure is a
+  logged warning.
 
 ## Requirements
 
@@ -409,6 +434,21 @@ aside as soon as both requirements are met — after that the dashboard is the l
   with an inline hint about what to fix.
 - **Review history**: title, repo, model, status badge (`Draft`, `In discussion`, `Applied`)
   and relative time. Failed ingests remain visible so the error can be inspected.
+- **30-day activity bar** above the list: estimated spend, tokens, acceptance rate and median
+  latency. It turns amber at 80% of a monthly cap and red at 100%; neither ever blocks a review.
+
+### Analytics (`/analytics`)
+
+- KPI cards: estimated spend in the window, tokens processed, median/p95 latency and the acceptance
+  rate, each with the counts behind it.
+- **Model comparison** table: calls, tokens in/out, estimated cost, average latency, acceptance and
+  push-back. Acceptance counts AI findings whose latest round was published; push-back counts the
+  ones you replied to or discarded. Imported GitHub threads are not the model's work and are
+  excluded.
+- **Purpose breakdown**: ingest, discuss, verdict and summarise, by calls and tokens.
+- **Monthly budget**: token and dollar caps, stored on your settings row. Saving an empty field
+  clears that cap. Caps warn, they never block; the window selector (7/30/90 days) does not affect
+  the monthly budget calculation.
 
 ### Workspace (`/reviews/:id`)
 
@@ -431,7 +471,7 @@ aside as soon as both requirements are met — after that the dashboard is the l
   selection.
 - The action bar is always visible: unsent count, verdict selector, AI opinion, **Submit
   responses**, and **Apply N pending findings / replies** (disabled until something is accepted and
-  not yet posted).
+  not yet posted). With nothing accepted and `APPROVE` selected it becomes **Approve on GitHub**.
 - **Sync GitHub** in the header pulls new comments; GitLab reviews show it disabled with the reason.
 
 ## API reference
@@ -448,7 +488,8 @@ or written is scoped to the signed-in account.
 | `GET` | `/auth/me` | `{id, email, created_at}` for the signed-in account |
 | `GET` | `/health` | `{"status": "ok"}` (public) |
 | `GET` | `/settings` | Active key per family, masked. `?reveal=true` adds raw values. |
-| `PUT` | `/settings` | Select the active key. Absent = unchanged, explicit `null` = clear. |
+| `PUT` | `/settings` | Select the active key; set `monthly_token_budget` / `monthly_dollar_budget`. Absent = unchanged, explicit `null` = clear. |
+| `GET` | `/analytics` | `?days=1..365` (default 30): totals, per-model/provider/purpose breakdown, latency percentiles, acceptance/push-back rates, monthly budget. |
 | `POST` | `/settings/test-connection` | Probe the active `version_control` and `llm` keys. |
 | `GET` | `/keys/version-control` | List GitHub/GitLab tokens (masked, `is_active`). |
 | `POST` | `/keys/version-control` | `{provider, token, base_url?, label?}` → 201. |
@@ -550,9 +591,12 @@ not part of the review, `409` when it is already published.
 
 No body field: the review is created with inline comments only, and no summary body. `200` →
 `{review, github_review_url, comments_posted, replies_posted, summarised, dropped[], warnings[]}`.
-`400` when nothing is accepted yet or a thread id is foreign, `409` once everything is already on
-GitHub, `422` when every accepted finding no longer matches the diff, `502` when GitHub rejects the
-call.
+`400` when nothing is accepted yet and the event is not `APPROVE`, or a thread id is foreign, `409`
+once everything is already on GitHub, `422` when every accepted finding no longer matches the diff,
+`502` when GitHub rejects the call.
+
+`{ "event": "APPROVE" }` with nothing accepted is the exception: it posts an approval with an empty
+`comments` list (`comments_posted: 0`), which is what the GitHub UI's approve button sends.
 
 Accepted AI findings are published as one review; their comment ids are read back and stored so
 later replies can be threaded. Every `pending_apply` round is then posted with
@@ -564,8 +608,8 @@ pre-publish summariser and collation fallback. Pushed-back threads are excluded 
 
 ## Data model
 
-Nine tables, created by ten Alembic revisions (`0001` … `0011_encrypt_credentials`; `0010` is
-reserved by the unimplemented phase 15 plan, so the numbering skips it).
+Eleven tables, created by twelve Alembic revisions (`0001` … `0013_llm_calls`; `0010` was never
+used — the numbering skips it).
 
 ```
 users
@@ -587,6 +631,8 @@ settings (one row per user, unique user_id)
   user_id               → users.id                (on delete cascade)
   version_control_key_id → version_control_keys.id  (on delete set null)
   llm_key_id            → llm_keys.id               (on delete set null)
+  monthly_token_budget  (bigint, null = uncapped),
+  monthly_dollar_budget (float, null = uncapped),
   updated_at
 
 code_reviews                FK user_id → users.id  (cascade delete)
@@ -610,7 +656,24 @@ thread_rounds           FK thread_id → review_threads.id  (cascade delete)
 thread_messages         FK thread_id → review_threads.id  (cascade delete)
   role (assistant | user | system), content, round_number, is_external, author,
   github_comment_id, created_at
+
+review_events           FK review_id → code_reviews.id  (cascade delete)
+  seq (unique per review), ts, stage, label, detail, level, progress, data, terminal
+
+llm_calls               FK review_id → code_reviews.id  (cascade delete, nullable)
+                        FK thread_id → review_threads.id (on delete set null, nullable)
+  purpose (ingest | discuss | verdict | summarise), provider, model,
+  prompt_tokens, completion_tokens, total_tokens, estimated_cost_usd,
+  latency_ms, ok, error_class, created_at
 ```
+
+`llm_calls` holds **counts, not text**: no prompt, system prompt, diff or completion is stored, so
+the ledger cannot leak what was reviewed. `provider` is the model-id prefix (`claude`, `openai`,
+`ollama-cloud`, `ollama-local`) and `model` is the bare name, so a row joins a review's
+`model_used` on `provider:model`. Token columns are `NULL`, never `0`, when the provider or model
+does not report usage. Ownership is reached through `review_id → code_reviews.user_id`, which is why
+there is no duplicate `user_id` column. Indexes: `(review_id, created_at)` for the per-review usage
+line and `(created_at, provider, model, purpose)` for the analytics window.
 
 `github_comment_id` is the dedupe key: every comment this review has seen or posted is remembered
 there (and on the thread's root id and the round's inbound/published ids), which is what makes a sync
@@ -632,7 +695,7 @@ until an operator reconfigures it.
 | 2 | `services/diff_parser.py` | Split into `FileDiff`/`Hunk`/`Line`, number the RIGHT side, mark binaries, skip lockfiles (`package-lock.json`, `Gemfile.lock`, …), generated assets and vendored dirs. |
 | 3 | `services/skill_loader.py` | Recursively read the skill library; always include `SKILL.md`, then rank references by token overlap with changed paths plus core terms (`rubric`, `verification`, `output`, …) until the budget is spent. |
 | 4 | `services/prompts.py` | System prompt = skills + output contract. User prompt = PR identity and a numbered diff whose left column is the only legal anchor set. |
-| 5 | `services/llm_service.py` | Claude Messages API, Ollama Cloud (`https://ollama.com/api`, bearer key) or a local daemon, resolved from the model-id prefix (`format: json` only for review generation; discussions are prose). |
+| 5 | `services/llm_service.py` | Claude Messages API, Ollama Cloud (`https://ollama.com/api`, bearer key) or a local daemon, resolved from the model-id prefix (`format: json` only for review generation; discussions are prose). Returns an `LLMResult` (text + reported tokens + latency) and records the call through `services/ledger.py`. |
 | 6 | `services/review_pipeline.py` | Runs as a background job, publishing SSE progress at each stage. Imports existing PR comments (grouped by root, as `GITHUB_EXISTING` threads), parses `{verdict, confidence, findings}`, anchors each finding to a real line, rebuilds the hunk, persists threads with their first round, records warnings. |
 | 7 | `services/discussion.py` | Append user messages, resolve `#N` references, `asyncio.gather` one call per thread, append replies, flip status to `in_discussion` if anything succeeded. |
 | 8 | `services/summarise.py` | Pre-publish pass: one comment per thread, or withdraw it when the finding was conceded. Best-effort. |
@@ -641,6 +704,10 @@ until an operator reconfigures it.
 
 Budgets and truncation are explicit: when the diff or skill library does not fit, the model is
 told what was cut and the review records a warning for the operator.
+
+Steps 5–9 all funnel through `llm_service.generate`, which is the one place a provider call is made
+and the one place an `llm_calls` row is written — so spend by purpose, per model, and the latency
+percentiles on `/analytics` describe exactly the calls the pipeline made.
 
 ## Project structure
 
@@ -653,19 +720,21 @@ code-review-master/
 │   │   ├── db/                  base.py · session.py (engine, get_db) · init_db.py (migrations)
 │   │   │                        types.py (EncryptedText) · encryption.py (backfill, rotation)
 │   │   ├── models/              keys.py (version control + LLM) · settings.py · review.py
-│   │   ├── schemas/             keys.py · settings.py · review.py · skills.py · common.py
+│   │   │                        llm_call.py (call ledger)
+│   │   ├── schemas/             keys.py · settings.py · review.py · skills.py · analytics.py
 │   │   ├── services/            vcs.py · github_service · gitlab_service · keys_service
 │   │   │                        diff_parser · skill_loader · prompts · llm_service
 │   │                        review_pipeline · thread_sync · discussion · summarise
 │   │                        apply_service · references · skills_service · progress · secrets
-│   │   │                        settings_service · pull_request.py
+│   │   │                        settings_service · pull_request · ledger · analytics
 │   │   └── main.py              app factory, CORS, router registration, lifespan
 │   ├── alembic/                 0001_initial_schema · 0002_review_notes · 0003_ollama_cloud
 │   │                            0004_skill_foundation · 0005_review_intelligence
 │   │                            0006_provider_keys · 0007_verdict_note
 │   │                            0008_users_and_ownership · 0009_thread_rounds
-│   │                            0011_encrypt_credentials (0010 reserved by phase 15)
-│   ├── tests/                   185 tests across 19 test modules (SQLite, via real migrations)
+│   │                            0011_encrypt_credentials · 0012_review_events
+│   │                            0013_llm_calls (no 0010)
+│   ├── tests/                   221 tests across 21 test modules (SQLite, via real migrations)
 │   ├── scripts/                 migrate_sqlite_to_postgres.py (rake-style DB copy)
 │   │                            generate_encryption_key.py · rotate_credentials_key.py
 │   ├── alembic.ini  pytest.ini  requirements.txt  main.py  .env.example
@@ -676,12 +745,12 @@ code-review-master/
 │   │   │                        ReviewHeader · StickyActionBar · WarningsBanner
 │   │   │                        KeyManager · SetupGate · IngestProgress · FoundationUpload · ui/*
 │   │   ├── pages/               DashboardPage · ReviewDetailPage · SettingsPage · SetupPage
-│   │   │                        SkillsPage
+│   │   │                        SkillsPage · AnalyticsPage
 │   │   ├── context/             SettingsContext (one settings fetch, needs_setup, refresh)
 │   │   ├── services/api.ts      typed fetch wrapper (ApiError carries status + detail)
 │   │   ├── hooks/               useReviewDrafts
 │   │   ├── types/               interfaces mirroring the Pydantic schemas
-│   │   └── lib/utils.ts         cn, relativeTime, formatAbsolute, shortSha
+│   │   └── lib/utils.ts         cn, relativeTime, compactNumber, estimatedCost, formatDuration
 │   ├── tailwind.config.js  vite.config.ts  tsconfig.json  package.json
 ├── code-review/                 the injected skill library (SKILL.md + references/)
 ├── docs/plans/                  phase 1–16 implementation plans with Mermaid diagrams
@@ -693,7 +762,7 @@ code-review-master/
 ```bash
 # backend
 cd backend && source .venv/bin/activate
-pytest                      # 168 tests, ~3s
+pytest                      # 221 tests, ~5s
 alembic revision -m "msg"   # new migration (hand-edit it, keep it dialect-agnostic)
 
 # frontend
@@ -757,6 +826,10 @@ directories, so name domain files after what they govern (`reference/payments.md
 - **Large diffs are truncated, not chunked.** One model call per review; the cut is announced to
   the model and recorded as a warning. Chunked multi-pass review is not implemented.
 - **No streaming.** A slow local model means a spinner with an elapsed-seconds counter.
+- **Cost is an estimate, never a bill.** Rates live in `app/core/pricing.py` (USD per 1M tokens,
+  prefix-matched); a model that is not listed reports tokens and no dollars. Nothing is reconciled
+  against a provider invoice, and the ledger stores no prompt text, so the numbers describe calls
+  but cannot reconstruct them.
 - **Single-user.** There is no authentication on the API; it binds to localhost and is meant to.
 - **Discussions see the anchored hunk, not the repository.** The model can compare the change
   against the diff context and the skill rules; it cannot browse the codebase.
@@ -789,8 +862,10 @@ directories, so name domain files after what they govern (`reference/payments.md
 
 ## Documentation
 
-- `docs/plans/phase_1_plan.md` … `phase_11_plan.md` — objective, Mermaid design diagrams, API
+- `docs/plans/phase_1_plan.md` … `phase_21_plan.md` — objective, Mermaid design diagrams, API
   contracts, file map, verification criteria for each phase.
+- `INITIATIVES.md` — ranked backlog of the next features, each with evidence, design sketch,
+  touch points and verification, plus what was deliberately deferred.
 - `CHANGELOG.md` — what shipped in each phase, grouped by Added / Changed / Removed / Fixed.
 - `AGENTS.md` — contributor/agent conventions: the plan-first rule, architecture, database rules,
   testing gates and gotchas.

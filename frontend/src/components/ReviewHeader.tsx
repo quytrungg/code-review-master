@@ -1,7 +1,7 @@
-import { ArrowLeft, ExternalLink, GitBranch, GitCommitHorizontal, Cpu } from "lucide-react";
+import { Activity, ArrowLeft, ExternalLink, GitBranch, GitCommitHorizontal, Cpu } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/Badge";
-import { relativeTime, shortSha } from "@/lib/utils";
+import { compactNumber, estimatedCost, formatDuration, relativeTime, shortSha } from "@/lib/utils";
 import type { CodeReviewDetail } from "@/types";
 
 const statusTone = (status: CodeReviewDetail["status"]) =>
@@ -68,6 +68,18 @@ export function ReviewHeader({ review }: { review: CodeReviewDetail }) {
             {review.model_used ? (
               <span className="inline-flex items-center gap-1">
                 <Cpu className="h-3.5 w-3.5" /> {review.model_used}
+              </span>
+            ) : null}
+            {review.usage && review.usage.calls > 0 ? (
+              <span
+                className="inline-flex items-center gap-1 font-mono"
+                title="Model calls for this review. Cost is estimated from a local price table."
+              >
+                <Activity className="h-3.5 w-3.5" />
+                {review.usage.calls} call{review.usage.calls === 1 ? "" : "s"} ·{" "}
+                {compactNumber(review.usage.total_tokens)} tokens ·{" "}
+                {estimatedCost(review.usage.estimated_cost_usd)} ·{" "}
+                {formatDuration(review.usage.latency_ms)} total
               </span>
             ) : null}
             <span>· {relativeTime(review.created_at)}</span>
