@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Check, Copy, Hourglass, MessageSquare, Send } from "lucide-react";
+import { Bot, Check, Copy, Hourglass, MessageSquare, RotateCw, Send } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Textarea } from "@/components/ui/Input";
 import { MentionMenu, activeMention, filterOptions, insertMention } from "@/components/MentionMenu";
@@ -29,6 +29,10 @@ export interface CommentBoxProps {
   onSaveSummary?: (roundId: number, text: string) => void;
   decidingRoundId?: number | null;
   sending?: boolean;
+  /** Live streamed reply while this thread is being answered; undefined when not streaming. */
+  streamText?: string;
+  /** Resubmits this one draft; rendered when the last attempt failed. */
+  onRetry?: () => void;
   submitDisabledReason?: string | null;
   disabled?: boolean;
 }
@@ -75,10 +79,13 @@ export function CommentBox({
   onSaveSummary,
   decidingRoundId = null,
   sending = false,
+  streamText,
+  onRetry,
   submitDisabledReason = null,
   disabled = false,
 }: CommentBoxProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   // The token Esc dismissed, so the key-up that follows does not reopen it.
@@ -227,6 +234,17 @@ export function CommentBox({
     }
   }, [selected]);
 
+  // Tail the stream unless the reviewer scrolled away from the bottom of the discussion pane.
+  useEffect(() => {
+    if (streamText === undefined || !streamRef.current) return;
+    const pane = scrollableAncestor(streamRef.current);
+    if (!pane) return;
+    const distanceFromBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight;
+    if (distanceFromBottom < 96) {
+      streamRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [streamText]);
+
   // Anchor the picker to the textarea and keep it inside the pane that clips it: open upwards when
   // the composer sits near the pane's bottom edge, and never grow taller than the room it has.
   useLayoutEffect(() => {
@@ -347,6 +365,33 @@ export function CommentBox({
           );
         })}
 
+        {streamText !== undefined ? (
+          <div
+            ref={streamRef}
+            className="flex gap-2.5 rounded-lg border border-accent/40 bg-accent/5 p-2.5"
+          >
+            <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-accent/15 text-accent">
+              <Bot className="h-3.5 w-3.5" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="text-xs font-medium text-ink">
+                  {isGithub ? "AI copilot" : "AI review"}
+                </span>
+                <span className="text-[11px] text-inkMuted">answering…</span>
+              </div>
+              <div className="md-body">
+                {streamText ? (
+                  renderMarkdown(streamText)
+                ) : (
+                  <span className="text-xs text-inkMuted">Waiting for the first tokens…</span>
+                )}
+                <span className="ml-1 inline-block h-3 w-1.5 animate-pulse rounded-[1px] bg-accent align-text-bottom" />
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <div className="space-y-2 pt-1">
           <div ref={composerRef} className="relative">
             <Textarea
@@ -380,12 +425,33 @@ export function CommentBox({
             ) : null}
           </div>
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] text-inkMuted">
-              {submitDisabledReason ?? "Drafts stay local until you submit them."}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={cn(
+                  "text-[11px]",
+                  submitDisabledReason ? "text-danger" : "text-inkMuted",
+                )}
+              >
+                {submitDisabledReason ?? "Drafts stay local until you submit them."}
+              </span>
+              {submitDisabledReason && onRetry ? (
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRetry();
+                  }}
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-accent/50 bg-accent/10 px-2 text-[11px] font-medium text-accent transition-colors hover:bg-accent/15 disabled:opacity-40"
+                >
+                  <RotateCw className="h-3 w-3" /> Retry
+                </button>
+              ) : null}
+            </div>
             {sending ? (
               <Badge tone="accent">
-                <Hourglass className="h-3 w-3 animate-pulse" /> Thinking…
+                <Hourglass className="h-3 w-3 animate-pulse" />
+                {streamText !== undefined ? "Answering…" : "Thinking…"}
               </Badge>
             ) : draft.trim() ? (
               <Badge tone="warning">

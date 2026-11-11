@@ -1,31 +1,36 @@
 /** @type {import('tailwindcss').Config} */
+
+// Palette channels live in src/index.css: `:root` (dark) and `[data-theme="light"]`.
+// The <alpha-value> placeholder keeps every `bg-canvas/80`-style opacity modifier working.
+const token = (name) => `rgb(var(${name}) / <alpha-value>)`;
+
 export default {
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        canvas: "#0b0d12",
-        surface: "#12151d",
-        surfaceMuted: "#171b25",
-        border: "#232838",
-        borderStrong: "#2f3650",
-        ink: "#e6e9f2",
-        inkMuted: "#9aa3bb",
-        accent: "#7c8bff",
-        accentStrong: "#5b6bfa",
-        success: "#3ddc97",
-        warning: "#f4c15d",
-        danger: "#ff6b81",
-        add: "#12351f",
-        del: "#3a1520",
+        canvas: token("--canvas"),
+        surface: token("--surface"),
+        surfaceMuted: token("--surface-muted"),
+        border: token("--border"),
+        borderStrong: token("--border-strong"),
+        ink: token("--ink"),
+        inkMuted: token("--ink-muted"),
+        accent: token("--accent"),
+        accentStrong: token("--accent-strong"),
+        success: token("--success"),
+        warning: token("--warning"),
+        danger: token("--danger"),
+        add: token("--add"),
+        del: token("--del"),
       },
       fontFamily: {
         sans: ["Inter", "ui-sans-serif", "system-ui", "sans-serif"],
         mono: ["JetBrains Mono", "ui-monospace", "SFMono-Regular", "monospace"],
       },
       boxShadow: {
-        card: "0 1px 0 rgba(255,255,255,0.03) inset, 0 10px 30px -20px rgba(0,0,0,0.9)",
+        card: "var(--shadow-card)",
       },
     },
   },

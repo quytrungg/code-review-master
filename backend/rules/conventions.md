@@ -17,7 +17,8 @@ delta reviews) · `thread_sync` · `discussion` ·
 `auth_service` · `secrets`, `settings_service` · `ledger` (one `llm_calls` row per call, own
 session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line) ·
 `github_inbox_service` (PR inbox: search-based discovery, turn-taking detection, quick reviews,
-comment polish).
+comment polish) · `skill_analyzer_service` (skill evolution: aggregates the review history,
+asks a model to propose guideline edits, validates them against the filesystem).
 
 ## Routes and errors
 

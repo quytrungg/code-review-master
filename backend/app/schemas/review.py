@@ -298,3 +298,22 @@ class RoundDecisionRequest(BaseModel):
 class RoundDecisionResponse(BaseModel):
     review: CodeReviewDetail
     warnings: list[str] = Field(default_factory=list)
+
+
+class LessonDraftResponse(BaseModel):
+    """A model-drafted rule the reviewer can edit before applying — never applied as-is."""
+
+    title: str
+    body: str
+
+
+class LessonApplyRequest(BaseModel):
+    foundation_id: str = Field(min_length=1, max_length=64)
+    title: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1, max_length=8000)
+
+
+class LessonApplyResponse(BaseModel):
+    path: str
+    foundation: str
+    lesson_id: int

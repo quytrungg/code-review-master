@@ -15,6 +15,8 @@ const PURPOSE_LABELS: Record<PurposeUsage["purpose"], string> = {
   discuss: "Discuss",
   verdict: "Verdict",
   summarise: "Summarise",
+  polish: "Polish",
+  evolve: "Evolve",
 };
 
 function Kpi({ label, value, hint }: { label: string; value: string; hint: string }) {

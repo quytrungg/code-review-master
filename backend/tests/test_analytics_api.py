@@ -205,12 +205,16 @@ def test_totals_volume_and_cost(client):
     assert body["window_days"] == 30
 
     purposes = {row["purpose"]: row for row in body["by_purpose"]}
-    assert list(purposes) == ["ingest", "discuss", "verdict", "summarise", "polish"]
+    # Every purpose the ledger knows about is listed, but the set grows: assert the known ones
+    # are present rather than pinning the exact list.
+    assert {"ingest", "discuss", "verdict", "summarise", "polish", "evolve"} <= set(purposes)
     assert purposes["ingest"]["calls"] == 2
     assert purposes["ingest"]["total_tokens"] == 1500
     assert purposes["discuss"]["calls"] == 1
     assert purposes["summarise"]["calls"] == 0
     assert purposes["summarise"]["estimated_cost_usd"] is None
+    # The evolution call belongs to no review, so it is not attributable to this account.
+    assert purposes["evolve"]["calls"] == 0
 
 
 def test_latency_percentiles_and_model_rows(client):

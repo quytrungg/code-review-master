@@ -8,10 +8,11 @@ Use **Ollama Cloud** (default), **Claude**, **OpenAI/Codex**, or a **local Ollam
 
 - **Your standards, not generic advice** — inject a local markdown skill library into each review, with rules selected for the files that changed.
 - **Findings anchored to real code** — every finding is mapped to a valid diff line, with its code context rebuilt from the actual PR diff.
-- **A review you can argue with** — discuss findings, reference other threads with `#N`, accept a conclusion, or push back before anything is published.
+- **A review you can argue with** — discuss findings, reference other threads with `#N`, accept a conclusion, or push back before anything is published. Replies stream token by token; stop the batch or retry one thread without losing what finished.
 - **Existing conversations included** — import current PR comments, sync new replies, and manage AI findings and human discussions in one workspace.
 - **Publish only what you approve** — accepted findings become one review with inline comments; rejected or withdrawn findings stay unpublished.
 - **Follow new pushes automatically** — watch a PR and review only the delta when its head commit changes.
+- **Your standards can improve themselves** — let a model read your last 30 days of pushbacks and propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
 - **Understand model usage** — track calls, tokens, latency, estimated cost, acceptance rate, and push-back rate per review and across models.
 
 ## How it works
@@ -92,6 +93,8 @@ On first launch, the setup guide asks for:
 1. **Version control** — add a GitHub or GitLab token.
 2. **Model provider** — add a hosted-provider API key or a local Ollama base URL.
 3. **First review** — return to the dashboard, paste a PR/MR URL, select a model, and choose **Start review**.
+
+Settings also has a **Beta features** card: experiments in development, switched on per account and stored with your settings. The first flag is *Push-back lessons* — when you push back on a finding, the app offers to record the lesson as a rule in a skill foundation. Turn the flag on, click Push back, and a dialog asks: **No** dismisses it and pushes back as usual; **Yes** drafts a reusable rule from the finding (editable), you pick the target foundation, and **Save lesson** writes it there as `lessons/<filetype>-<slug>.md` — so future reviews of the same file type load it.
 
 Credentials are encrypted at rest when `CREDENTIALS_ENCRYPTION_KEY` is configured. Generate a key with:
 

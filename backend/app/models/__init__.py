@@ -8,6 +8,7 @@ from app.models.keys import (
     VersionControlKey,
 )
 from app.models.llm_call import LLMCall, LLMPurpose
+from app.models.lesson import SkillLesson
 from app.models.review import (
     CodeReview,
     MessageRole,
@@ -41,6 +42,7 @@ __all__ = [
     "ReviewWatch",
     "RoundStatus",
     "Settings",
+    "SkillLesson",
     "ThreadMessage",
     "ThreadOrigin",
     "ThreadRound",

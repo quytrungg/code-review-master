@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, Send, ShieldCheck, Sparkles } from "lucide-react";
+import { CheckCircle2, Loader2, Send, ShieldCheck, Sparkles, Square } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { cn } from "@/lib/utils";
 import type { ReviewVerdict } from "@/types";
@@ -25,6 +25,9 @@ export interface StickyActionBarProps {
   onUseAiVerdict?: () => void;
   onSubmit: () => void;
   onApply: () => void;
+  /** While streaming: progress instead of one indeterminate spinner, plus a working Stop. */
+  submitProgress?: { answered: number; total: number } | null;
+  onStop?: () => void;
   submitting?: boolean;
   applying?: boolean;
   applyLabel?: string;
@@ -47,6 +50,8 @@ export function StickyActionBar({
   onUseAiVerdict,
   onSubmit,
   onApply,
+  submitProgress = null,
+  onStop,
   submitting = false,
   applying = false,
   applyLabel = "Apply to GitHub",
@@ -148,8 +153,19 @@ export function StickyActionBar({
               ) : (
                 <Send className="h-4 w-4" />
               )}
-              Submit responses{pendingCount > 0 ? ` (${pendingCount})` : ""}
+              {submitting && submitProgress
+                ? `${submitProgress.answered} of ${submitProgress.total} answered`
+                : `Submit responses${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
             </Button>
+            {submitting && onStop ? (
+              <Button
+                variant="ghost"
+                onClick={onStop}
+                title="Stop the remaining answers — completed threads are already saved"
+              >
+                <Square className="h-4 w-4" /> Stop
+              </Button>
+            ) : null}
             <Button
               onClick={onApply}
               disabled={

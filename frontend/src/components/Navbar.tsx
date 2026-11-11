@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, BookOpen, GitPullRequest, Inbox, LogOut, Settings2, Sparkles } from "lucide-react";
+import { BarChart3, BookOpen, GitPullRequest, Inbox, LogOut, Moon, Settings2, Sparkles, Sun } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { getTheme, toggleTheme, type Theme } from "@/lib/theme";
 import { api } from "@/services/api";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { to: "/inbox", label: "PR Inbox", icon: Inbox, end: true, badge: true },
   { to: "/", label: "Reviews", icon: GitPullRequest, end: true, badge: false },
+  { to: "/inbox", label: "PR Inbox", icon: Inbox, end: true, badge: true },
   { to: "/skills", label: "Skills", icon: BookOpen, end: false, badge: false },
   { to: "/analytics", label: "Analytics", icon: BarChart3, end: false, badge: false },
   { to: "/settings", label: "Settings", icon: Settings2, end: false, badge: false },
@@ -18,6 +19,7 @@ export function Navbar() {
   const navigate = useNavigate();
   const location = useLocation();
   const [unread, setUnread] = useState(0);
+  const [theme, setThemeState] = useState<Theme>(getTheme);
 
   useEffect(() => {
     // A failure here must never break the chrome: the badge is best-effort.
@@ -74,6 +76,16 @@ export function Navbar() {
               ) : null}
             </NavLink>
           ))}
+
+          <button
+            type="button"
+            onClick={() => setThemeState(toggleTheme())}
+            aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-inkMuted transition-colors hover:bg-surfaceMuted/60 hover:text-ink"
+          >
+            {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          </button>
 
           <span className="mx-2 h-5 w-px bg-border" aria-hidden="true" />
           <span

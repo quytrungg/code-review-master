@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from app.schemas.common import iso_utc
 from app.services.secrets import mask_secret
+from app.services.settings_service import BETA_FEATURES
 
 ConnectionTargetName = Literal["version_control", "llm"]
 
@@ -21,6 +22,17 @@ class SettingsUpdate(BaseModel):
     # Soft monthly caps for Analytics. `null` clears a cap; an absent field leaves it alone.
     monthly_token_budget: int | None = Field(default=None, ge=0)
     monthly_dollar_budget: float | None = Field(default=None, ge=0)
+    # Beta flags, a full-dict replace. `null` clears every flag; an absent field leaves
+    # them alone. Ids are validated against the registry at the route boundary (422).
+    beta_features: dict[str, bool] | None = None
+
+
+class BetaFeature(BaseModel):
+    """One registry entry: what the Settings page renders as a toggle."""
+
+    id: str
+    label: str
+    description: str
 
 
 class ActiveKeySummary(BaseModel):
@@ -40,6 +52,9 @@ class SettingsRead(BaseModel):
     version_control: ActiveKeySummary | None = None
     llm: ActiveKeySummary | None = None
     needs_setup: bool = True
+    # Every registry id appears, defaulting to false — the page never infers defaults.
+    beta_features: dict[str, bool] = {}
+    beta_registry: list[BetaFeature] = []
     updated_at: str | None = None
 
     # Populated only when the request asks for revelation.
@@ -77,6 +92,13 @@ class SettingsRead(BaseModel):
                 else None
             ),
             needs_setup=version_control is None or llm is None,
+            beta_features={
+                entry["id"]: bool(
+                    (getattr(row, "beta_features", None) or {}).get(entry["id"], False)
+                )
+                for entry in BETA_FEATURES
+            },
+            beta_registry=[BetaFeature(**entry) for entry in BETA_FEATURES],
             updated_at=iso_utc(row.updated_at),
             version_control_token=version_control.token if (reveal and version_control) else None,
             llm_api_key=llm.api_key if (reveal and llm) else None,

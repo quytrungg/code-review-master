@@ -13,7 +13,7 @@ from pathlib import Path
 
 from app.core.config import get_settings
 
-SKILL_SUFFIXES = {".md", ".txt"}
+SKILL_SUFFIXES = {".md", ".txt", ".yml"}
 ENTRY_NAMES = ("SKILL.md", "skill.md", "README.md")
 # Reference files that hold the review contract itself rather than one domain's rules.
 CORE_TERMS = (

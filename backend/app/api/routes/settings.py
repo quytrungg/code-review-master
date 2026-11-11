@@ -12,6 +12,7 @@ from app.schemas.settings import (
     SettingsUpdate,
 )
 from app.services import keys_service
+from app.services import settings_service
 from app.services.keys_service import KeyError
 from app.services.settings_service import get_or_create
 
@@ -67,6 +68,24 @@ def update_settings(
         for name in caps & fields:
             setattr(row, name, getattr(payload, name))
         db.commit()
+
+    # Beta flags: full-dict replace, same absent/null semantics as the caps. Unknown ids
+    # are rejected before anything persists, so the stored map only ever holds registry ids.
+    if "beta_features" in fields:
+        if payload.beta_features is None:
+            row = get_or_create(db, user.id)
+            row.beta_features = {}
+            db.commit()
+        else:
+            unknown = set(payload.beta_features) - settings_service.BETA_FEATURE_IDS
+            if unknown:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unknown beta feature: {', '.join(sorted(unknown))}",
+                )
+            row = get_or_create(db, user.id)
+            row.beta_features = dict(payload.beta_features)
+            db.commit()
     return _read(db, user.id)
 
 

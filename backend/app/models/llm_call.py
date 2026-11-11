@@ -31,8 +31,13 @@ class LLMPurpose:
     SUMMARISE = "summarise"
     # The inbox's one-shot prose polish for a quick-review draft.
     POLISH = "polish"
+    # The skill-evolution meta-analysis (phase 34): one call over the guidelines and the
+    # recent review history. It belongs to no single review, so it carries no review id.
+    EVOLVE = "evolve"
+    # The push-back lesson draft (phase 36): one call over a rejected finding, beta-gated.
+    LESSON = "lesson"
 
-    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE, POLISH)
+    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE, POLISH, EVOLVE, LESSON)
 
 
 class LLMCall(Base):

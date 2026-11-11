@@ -90,6 +90,15 @@ review is a `502`; there is no retry (the body-only retry disappeared with the r
   aliases. Apply posts the accepted text and never rewrites it; only a thread without accepted text
   falls back to the summarise-and-collate pass.
 
+## Discussion has two transports
+
+`POST /discuss` (JSON) answers everything behind one gather and keeps the reviewer's message even
+when the model fails; `POST /discuss/stream` (SSE) streams per-thread deltas and writes each
+thread's user + assistant messages **atomically on completion** — a failed or client-aborted
+thread persists nothing, the draft stays client-side, and `done` is never sent on abort. Both
+share `discussion.prepare_discussion`, which appends the incoming question to the prompt as a
+transient tail because the streaming path may never persist it.
+
 ## Sync is idempotent by comment id
 
 `thread_sync.known_comment_ids` covers roots, round inbound and published ids, and

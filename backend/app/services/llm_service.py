@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -544,6 +545,269 @@ async def _generate_ollama(
         completion_tokens=completion_tokens,
         latency_ms=_elapsed_ms(started),
         provider=provider,
+        model=name,
+    )
+
+
+async def stream(
+    credentials: LLMCredentials,
+    model: ModelRef,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    on_delta: Callable[[str], None],
+    purpose: str,
+    review_id: int | None = None,
+    thread_id: int | None = None,
+) -> LLMResult:
+    """One streaming completion: `on_delta` receives each text chunk as it arrives.
+
+    Same contract as `generate()` — the assembled text and usage come back in one
+    `LLMResult`, and every outcome (success or failure) reaches the ledger. Credentials are
+    resolved before recording, so a missing key raises without a ledger row. A cancelled
+    call records nothing: partial usage is unknowable.
+    """
+    config = get_settings()
+    base_url: str = ""
+    headers: dict[str, str] = {}
+    if model.provider == CLAUDE:
+        if not credentials.api_key:
+            raise LLMError("No Claude API key configured. Add one in Settings.")
+    else:
+        base_url, headers = resolve_endpoint(credentials, model)
+
+    started = time.monotonic()
+    try:
+        if model.provider == CLAUDE:
+            result = await _stream_claude(
+                credentials, model.name, system_prompt, user_prompt, config.llm_max_tokens,
+                on_delta,
+            )
+        elif model.provider == OPENAI:
+            result = await _stream_openai(
+                base_url, headers, model.name, system_prompt, user_prompt, config, on_delta
+            )
+        else:
+            result = await _stream_ollama(
+                model.provider, base_url, headers, model.name, system_prompt, user_prompt,
+                config, on_delta,
+            )
+    except Exception as exc:
+        ledger.record(
+            LLMResult(
+                text="",
+                prompt_tokens=None,
+                completion_tokens=None,
+                latency_ms=_elapsed_ms(started),
+                provider=model.provider,
+                model=model.name,
+                ok=False,
+                error_class=_error_class(exc),
+            ),
+            purpose=purpose,
+            review_id=review_id,
+            thread_id=thread_id,
+        )
+        raise
+
+    ledger.record(result, purpose=purpose, review_id=review_id, thread_id=thread_id)
+    return result
+
+
+async def _stream_ollama(
+    provider: str,
+    base_url: str,
+    headers: dict[str, str],
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    config,
+    on_delta: Callable[[str], None],
+) -> LLMResult:
+    """Ollama NDJSON stream: one JSON object per line, terminal frame has `done: true`."""
+    url = base_url.rstrip("/") + "/api/chat"
+    payload = {
+        "model": name,
+        "stream": True,
+        "options": {"temperature": 0.1, "num_ctx": OLLAMA_NUM_CTX},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    started = time.monotonic()
+    parts: list[str] = []
+    terminal: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=config.llm_timeout_s) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code in (401, 403):
+                    raise LLMError("Ollama rejected the API key. Check it in Settings.")
+                if response.status_code == 404:
+                    raise LLMError(
+                        f"Ollama does not have the model '{name}'. Check the model name in Settings."
+                    )
+                if response.status_code != 200:
+                    await response.aread()
+                    raise LLMError(
+                        f"Ollama returned HTTP {response.status_code}: {response.text[:300]}"
+                    )
+                async for line in response.aiter_lines():
+                    if not line.strip():
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except ValueError as exc:
+                        raise LLMError("Ollama returned an unexpected response shape") from exc
+                    chunk = (event.get("message") or {}).get("content") or ""
+                    if chunk:
+                        parts.append(chunk)
+                        on_delta(chunk)
+                    if event.get("done"):
+                        terminal = event
+                        break
+    except httpx.HTTPError as exc:
+        raise LLMError(f"Could not reach Ollama at {base_url}: {exc.__class__.__name__}") from exc
+
+    prompt_tokens, completion_tokens = ollama_usage(terminal)
+    return LLMResult(
+        text="".join(parts),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=_elapsed_ms(started),
+        provider=provider,
+        model=name,
+    )
+
+
+async def _stream_openai(
+    base_url: str,
+    headers: dict[str, str],
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    config,
+    on_delta: Callable[[str], None],
+) -> LLMResult:
+    """OpenAI SSE stream: `data:` chunks, usage on the terminal frame, `data: [DONE]` ends."""
+    payload: dict = {
+        "model": name,
+        "temperature": 0,
+        "max_tokens": config.llm_max_tokens,
+        "stream": True,
+        # Usage arrives on a final choice-less chunk only when this is set.
+        "stream_options": {"include_usage": True},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    started = time.monotonic()
+    parts: list[str] = []
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    try:
+        async with httpx.AsyncClient(timeout=config.llm_timeout_s) as client:
+            async with client.stream(
+                "POST", f"{base_url}/chat/completions", json=payload, headers=headers
+            ) as response:
+                if response.status_code in (401, 403):
+                    raise LLMError("OpenAI rejected the API key. Check it in Settings.")
+                if response.status_code == 404:
+                    raise LLMError(
+                        f"OpenAI does not have the model '{name}'. Check the model name."
+                    )
+                if response.status_code != 200:
+                    await response.aread()
+                    raise LLMError(
+                        f"OpenAI returned HTTP {response.status_code}: {response.text[:300]}"
+                    )
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        body = json.loads(data)
+                    except ValueError as exc:
+                        raise LLMError("OpenAI returned an unexpected response shape") from exc
+                    choices = body.get("choices") or []
+                    if choices:
+                        chunk = (choices[0].get("delta") or {}).get("content") or ""
+                        if chunk:
+                            parts.append(chunk)
+                            on_delta(chunk)
+                    if body.get("usage"):
+                        prompt_tokens, completion_tokens = openai_usage(body)
+    except httpx.HTTPError as exc:
+        raise LLMError(f"Could not reach OpenAI at {base_url}: {exc.__class__.__name__}") from exc
+
+    return LLMResult(
+        text="".join(parts),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=_elapsed_ms(started),
+        provider=OPENAI,
+        model=name,
+    )
+
+
+async def _stream_claude(
+    credentials: LLMCredentials,
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    on_delta: Callable[[str], None],
+) -> LLMResult:
+    """Anthropic SDK stream: text deltas, usage merged from message_start/message_delta."""
+    if not credentials.api_key:
+        raise LLMError("No Claude API key configured. Add one in Settings.")
+
+    from anthropic import APIError, AsyncAnthropic
+
+    client = AsyncAnthropic(
+        api_key=credentials.api_key, base_url=credentials.base_url or None
+    )
+    started = time.monotonic()
+    parts: list[str] = []
+    try:
+        async with client.messages.stream(
+            model=name,
+            max_tokens=max_tokens,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        ) as stream:
+            async for text in stream.text_stream:
+                if text:
+                    parts.append(text)
+                    on_delta(text)
+            message = await stream.get_final_message()
+    except APIError as exc:
+        raise LLMError(f"Claude API error: {getattr(exc, 'message', str(exc))}") from exc
+    finally:
+        await client.close()
+
+    usage = getattr(message, "usage", None)
+    prompt_tokens, completion_tokens = claude_usage(
+        {
+            "usage": {
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+            }
+        }
+    )
+    return LLMResult(
+        text="".join(parts),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=_elapsed_ms(started),
+        provider=CLAUDE,
         model=name,
     )
 

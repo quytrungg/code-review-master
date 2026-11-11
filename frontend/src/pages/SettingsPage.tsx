@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Cpu, Github, PlugZap, RefreshCw } from "lucide-react";
+import { Cpu, FlaskConical, Github, PlugZap, RefreshCw } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LLMKeys, VersionControlKeys } from "@/components/KeyManager";
 import { useSettings } from "@/context/SettingsContext";
 import { api, ApiError } from "@/services/api";
-import type { ConnectionResult, LLMKey, LLMKeyCreate, VersionControlKey, VersionControlKeyCreate } from "@/types";
+import type {
+  BetaFeature,
+  ConnectionResult,
+  LLMKey,
+  LLMKeyCreate,
+  VersionControlKey,
+  VersionControlKeyCreate,
+} from "@/types";
 
 export function SettingsPage() {
   const { settings, apply, refresh } = useSettings();
@@ -15,6 +22,7 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
   const [results, setResults] = useState<ConnectionResult[]>([]);
+  const [betaPending, setBetaPending] = useState<string | null>(null);
 
   const loadKeys = useCallback(async () => {
     setLoading(true);
@@ -83,6 +91,26 @@ export function SettingsPage() {
       setError(err instanceof ApiError ? err.message : "Connection test failed");
     } finally {
       setTesting(false);
+    }
+  }
+
+  // Beta toggles render from `beta_registry` and always send the full flag map, matching the
+  // PUT contract's full-dict replace.
+  async function toggleBeta(feature: BetaFeature) {
+    if (!settings || betaPending) return;
+    const flags: Record<string, boolean> = {};
+    for (const entry of settings.beta_registry) {
+      flags[entry.id] = settings.beta_features[entry.id] ?? false;
+    }
+    flags[feature.id] = !(flags[feature.id] ?? false);
+    setBetaPending(feature.id);
+    setError(null);
+    try {
+      apply(await api.setBetaFeatures(flags));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save the beta setting");
+    } finally {
+      setBetaPending(null);
     }
   }
 
@@ -176,6 +204,51 @@ export function SettingsPage() {
           )}
         </CardBody>
       </Card>
+
+      {settings && settings.beta_registry.length > 0 ? (
+        <Card>
+          <CardHeader
+            icon={<FlaskConical className="h-4 w-4" />}
+            title="Beta features"
+            description="Experiments still in development. Turn one on to try it; turn it off to return to the stable behaviour."
+          />
+          <CardBody>
+            <ul className="space-y-3">
+              {settings.beta_registry.map((feature) => {
+                const enabled = settings.beta_features[feature.id] ?? false;
+                const busy = betaPending === feature.id;
+                return (
+                  <li key={feature.id} className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium text-ink">{feature.label}</p>
+                      <p className="text-xs text-inkMuted">{feature.description}</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={feature.label}
+                      disabled={busy || betaPending !== null}
+                      onClick={() => void toggleBeta(feature)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
+                        enabled
+                          ? "border-success/50 bg-success/30"
+                          : "border-inkMuted/30 bg-inkMuted/10"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full transition-transform ${
+                          enabled ? "translate-x-[18px] bg-success" : "translate-x-[3px] bg-inkMuted"
+                        }`}
+                      />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </CardBody>
+        </Card>
+      ) : null}
     </div>
   );
 }

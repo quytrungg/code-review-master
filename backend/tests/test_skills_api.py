@@ -65,7 +65,7 @@ def test_unsupported_extension_is_rejected(client):
         "/api/skills/files", files={"file": ("rules.json", b"{}", "application/json")}
     )
     assert response.status_code == 422
-    assert ".md and .txt" in response.json()["detail"]
+    assert ".md, .txt and .yml" in response.json()["detail"]
 
 
 def test_empty_file_is_rejected(client):

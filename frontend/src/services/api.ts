@@ -8,13 +8,15 @@ import type {
   CodeReviewSummary,
   ConnectionTestResponse,
   CreateReviewAccepted,
-  DiscussResponse,
+  DiscussionStreamEvent,
   Foundation,
   InboxFilters,
   InboxSyncResponse,
   LLMKey,
   LLMKeyCreate,
   KeyTestResult,
+  LessonApplyResult,
+  LessonDraft,
   ModelCatalog,
   QuickReviewEvent,
   ReviewVerdict,
@@ -23,6 +25,10 @@ import type {
   RoundDecisionResponse,
   SettingsUpdate,
   SyncResponse,
+  SkillEvolutionAnalysis,
+  SkillEvolutionApplyResponse,
+  SkillEvolutionCloneResponse,
+  SkillEvolutionFileChange,
   SkillFileUpload,
   SkillsResponse,
   VersionControlKey,
@@ -95,6 +101,13 @@ export const api = {
   updateSettings: (payload: SettingsUpdate) =>
     request<AppSettings>("/settings", { method: "PUT", body: JSON.stringify(payload) }),
 
+  // Beta flags: full-dict replace, so the toggle sends every registry id at once.
+  setBetaFeatures: (flags: Record<string, boolean>) =>
+    request<AppSettings>("/settings", {
+      method: "PUT",
+      body: JSON.stringify({ beta_features: flags }),
+    }),
+
   testConnection: (targets: string[]) =>
     request<ConnectionTestResponse>("/settings/test-connection", {
       method: "POST",
@@ -153,11 +166,71 @@ export const api = {
 
   getReview: (id: number) => request<CodeReviewDetail>(`/reviews/${id}`),
 
-  discuss: (reviewId: number, threads: { thread_id: number; message: string }[]) =>
-    request<DiscussResponse>(`/reviews/${reviewId}/discuss`, {
-      method: "POST",
-      body: JSON.stringify({ threads }),
-    }),
+  /**
+   * The streaming discussion endpoint. `fetch` (not the JSON client) because the body is a
+   * Server-Sent Events stream; `signal` aborts it, which is how the Stop button cancels.
+   * Pre-stream failures (404/400/422) throw an ApiError with the same shape as `request`.
+   * The JSON variant stayed for API compatibility and tests, but the workspace only streams.
+   */
+  streamDiscussion: async (
+    reviewId: number,
+    threads: { thread_id: number; message: string }[],
+    onEvent: (event: DiscussionStreamEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> => {
+    let response: Response;
+    try {
+      response = await fetch(`${BASE_URL}/reviews/${reviewId}/discuss/stream`, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ threads }),
+        signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      throw new ApiError("Cannot reach the API. Is the backend running on :8000?", 0);
+    }
+
+    if (!response.ok) {
+      let detail = `Request failed (${response.status})`;
+      try {
+        const body = await response.json();
+        if (typeof body?.detail === "string") detail = body.detail;
+        else if (Array.isArray(body?.detail)) detail = body.detail.map((d: { msg: string }) => d.msg).join("; ");
+      } catch {
+        /* non-JSON error body */
+      }
+      throw new ApiError(detail, response.status);
+    }
+    if (!response.body) {
+      throw new ApiError("The browser could not open the discussion stream.", 0);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        let name: string | null = null;
+        let data: string | null = null;
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event: ")) name = line.slice(7);
+          else if (line.startsWith("data: ")) data = line.slice(6);
+        }
+        if (name && data) {
+          onEvent({ type: name, ...JSON.parse(data) } as DiscussionStreamEvent);
+        }
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+  },
 
   applyReview: (reviewId: number, payload: { event: ReviewVerdict; thread_ids?: number[] }) =>
     request<ApplyResponse>(`/reviews/${reviewId}/apply`, {
@@ -172,6 +245,21 @@ export const api = {
     request<RoundDecisionResponse>(`/reviews/${reviewId}/rounds/${roundId}/decision`, {
       method: "POST",
       body: JSON.stringify({ decision, summary: summary ?? null }),
+    }),
+
+  draftLesson: (reviewId: number, threadId: number) =>
+    request<LessonDraft>(`/reviews/${reviewId}/threads/${threadId}/lesson/draft`, {
+      method: "POST",
+    }),
+
+  applyLesson: (
+    reviewId: number,
+    threadId: number,
+    payload: { foundation_id: string; title: string; body: string },
+  ) =>
+    request<LessonApplyResult>(`/reviews/${reviewId}/threads/${threadId}/lesson`, {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
 
   listInbox: (filters: InboxFilters = {}) => {
@@ -236,4 +324,30 @@ export const api = {
 
   deleteFoundation: (id: string) =>
     request<void>(`/skills/foundations/${encodeURIComponent(id)}`, { method: "DELETE" }),
+
+  // Skill evolution: propose guideline edits from the recent review history, then apply them.
+  analyzeSkillHistory: (foundationId: string, days: number, model: string) =>
+    request<SkillEvolutionAnalysis>(`/skills/${encodeURIComponent(foundationId)}/analyze-history`, {
+      method: "POST",
+      body: JSON.stringify({ days, model }),
+    }),
+
+  applySkillEvolution: (foundationId: string, files: SkillEvolutionFileChange[]) =>
+    request<SkillEvolutionApplyResponse>(`/skills/${encodeURIComponent(foundationId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({ files }),
+    }),
+
+  cloneSkillEvolution: (
+    foundationId: string,
+    newFoundationName: string,
+    files: SkillEvolutionFileChange[],
+  ) =>
+    request<SkillEvolutionCloneResponse>(
+      `/skills/${encodeURIComponent(foundationId)}/clone-and-apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({ new_foundation_name: newFoundationName, files }),
+      },
+    ),
 };

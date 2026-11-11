@@ -1,18 +1,33 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from typing import NoReturn
 
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from sqlalchemy.orm import Session
+
+from app.api.deps import CurrentUser, get_db
 from app.core.config import get_settings
-from app.schemas.skills import FoundationRead, SkillFileUploadResponse, SkillsResponse
-from app.services import skills_service
+from app.schemas.skills import (
+    EvolutionAnalyzeRequest,
+    EvolutionAnalysisResponse,
+    EvolutionApplyRequest,
+    EvolutionApplyResponse,
+    EvolutionCloneRequest,
+    EvolutionCloneResponse,
+    EvolutionFileModification,
+    EvolutionHistory,
+    FoundationRead,
+    SkillFileUploadResponse,
+    SkillsResponse,
+)
+from app.services import skill_analyzer_service, skills_service
+from app.services.skill_analyzer_service import EvolutionError
 from app.services.skills_service import SkillError
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
 
-def _raise(exc: SkillError) -> None:
-    from fastapi import HTTPException
-
+def _raise(exc: SkillError) -> NoReturn:
     raise HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
@@ -86,3 +101,104 @@ def delete_foundation(foundation_id: str) -> Response:
     except SkillError as exc:
         _raise(exc)
     return Response(status_code=204)
+
+
+# -------------------------------------------------------------------------- skill evolution
+
+
+@router.post("/{foundation_id}/analyze-history", response_model=EvolutionAnalysisResponse)
+async def analyze_history(
+    foundation_id: str,
+    payload: EvolutionAnalyzeRequest,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+) -> EvolutionAnalysisResponse:
+    """Propose guideline edits from this account's recent review history."""
+    try:
+        result = await skill_analyzer_service.analyse(
+            db, user.id, foundation_id, payload.days, payload.model
+        )
+    except EvolutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except SkillError as exc:
+        _raise(exc)
+
+    return EvolutionAnalysisResponse(
+        analysis_summary=result.summary,
+        file_modifications=[
+            EvolutionFileModification(
+                file_path=proposal.file_path,
+                action=proposal.action,
+                rationale=proposal.rationale,
+                evidence_review_ids=proposal.evidence_review_ids,
+                original_content=proposal.original_content,
+                proposed_content=proposal.proposed_content,
+                unified_diff=proposal.unified_diff,
+            )
+            for proposal in result.proposals
+        ],
+        history=EvolutionHistory(
+            days=result.digest.days,
+            reviews=result.digest.review_count,
+            threads=result.digest.thread_count,
+            interactions=result.digest.interaction_count,
+        ),
+        warnings=result.warnings,
+    )
+
+
+@router.post("/{foundation_id}/apply", response_model=EvolutionApplyResponse)
+def apply_evolution(
+    foundation_id: str,
+    payload: EvolutionApplyRequest,
+) -> EvolutionApplyResponse:
+    """Write the approved edits into a foundation in place, after backing it up."""
+    try:
+        applied, backup = skills_service.apply_file_changes(
+            foundation_id,
+            [
+                skills_service.FileChange(
+                    file_path=item.file_path, action=item.action, content=item.content
+                )
+                for item in payload.files
+            ],
+        )
+    except SkillError as exc:
+        _raise(exc)
+    return EvolutionApplyResponse(
+        foundation=foundation_id,
+        applied=applied,
+        backup_path=str(backup),
+    )
+
+
+@router.post("/{foundation_id}/clone-and-apply", response_model=EvolutionCloneResponse)
+def clone_and_apply_evolution(
+    foundation_id: str,
+    payload: EvolutionCloneRequest,
+) -> EvolutionCloneResponse:
+    """Copy a foundation into a new one and write the approved edits into the copy."""
+    try:
+        info, applied = skills_service.clone_foundation(
+            foundation_id,
+            payload.new_foundation_name,
+            [
+                skills_service.FileChange(
+                    file_path=item.file_path, action=item.action, content=item.content
+                )
+                for item in payload.files
+            ],
+        )
+    except SkillError as exc:
+        _raise(exc)
+    return EvolutionCloneResponse(
+        foundation=FoundationRead(
+            id=info.id,
+            label=info.label,
+            is_default=info.is_default,
+            file_count=info.file_count,
+            total_chars=info.total_chars,
+            files=info.files,
+        ),
+        applied=applied,
+    )

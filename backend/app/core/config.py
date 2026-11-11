@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # return a full set, and a review nobody can read is not a better review.
     review_max_findings: int = 60
     llm_max_tokens: int = 4096
+    # Skill evolution (phase 34): the meta-analysis reads the foundation's rules and the last
+    # 30 days of review history. Both are capped so one prompt cannot outgrow the context.
+    evolution_skill_max_chars: int = 60_000
+    evolution_history_max_chars: int = 24_000
+    # Where foundation backups are written before an in-place apply. Unset → <foundations_dir>/.backups
+    backups_dir: str | None = None
 
     # Watches. Locally/Docker an asyncio loop checks every `watch_interval_minutes` (0 disables it);
     # serverless starts no loop and uses POST /api/watches/tick, authenticated by `watch_tick_secret`
@@ -115,6 +121,18 @@ class Settings(BaseSettings):
             candidate = Path(self.foundations_dir).expanduser()
             return candidate if candidate.is_absolute() else (BACKEND_DIR / candidate).resolve()
         return REPO_ROOT / "code-review-foundations"
+
+    @property
+    def resolved_backups_dir(self) -> Path:
+        """Directory holding foundation backups written before an in-place apply.
+
+        It lives outside every foundation root, so a backup is never loaded into a prompt, and
+        inside the uploaded-foundations directory, which is git-ignored.
+        """
+        if self.backups_dir:
+            candidate = Path(self.backups_dir).expanduser()
+            return candidate if candidate.is_absolute() else (BACKEND_DIR / candidate).resolve()
+        return self.resolved_foundations_dir / ".backups"
 
     @property
     def resolved_frontend_dir(self) -> Path | None:

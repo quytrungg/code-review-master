@@ -142,6 +142,9 @@ no destructive command against the operator's data.
 - Keep SSE headers (`Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`).
 - Serverless: `asyncio.create_task` dies with the response, so ingest is a background task; progress
   must stay in `review_events`; never run `fail_orphaned_reviews()` where instances share a DB.
+- **A running Vite dev server never re-reads `tailwind.config.js`.** HMR swaps components (a new
+  button appears) while the CSS keeps the old tokens, so a class/attribute can flip with no visual
+  change. Restart `npm run dev` after touching the config or the palette (phase 37).
 - **Two names for one provider.** A stored credential has `key.provider == "ollama_local"` (database
   form); a model id is `"ollama-local:<tag>"` (hyphen). Comparing the two silently never matches —
   that is how "hide local Ollama on serverless" quietly stopped hiding it. Use

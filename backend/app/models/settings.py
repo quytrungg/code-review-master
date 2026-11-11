@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer
+from sqlalchemy import BigInteger, DateTime, Float, ForeignKey, Integer, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, utcnow
@@ -31,6 +31,11 @@ class Settings(Base):
     # Soft monthly caps for the analytics page. NULL means uncapped; nothing is ever blocked.
     monthly_token_budget: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     monthly_dollar_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Beta feature flags, `{flag_id: bool}`. Only ids known to `settings_service.BETA_FEATURES`
+    # are ever stored; the map starts empty, which reads as "every flag off".
+    beta_features: Mapped[dict] = mapped_column(
+        JSON, nullable=False, default=dict, server_default="{}"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )

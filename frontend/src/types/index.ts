@@ -54,6 +54,9 @@ export interface AppSettings {
   version_control: ActiveKeySummary | null;
   llm: ActiveKeySummary | null;
   needs_setup: boolean;
+  // Beta flags: one key per registry id, false when off. `beta_registry` is the render source.
+  beta_features: Record<string, boolean>;
+  beta_registry: BetaFeature[];
   updated_at: string | null;
   version_control_token?: string | null;
   llm_api_key?: string | null;
@@ -64,6 +67,7 @@ export interface SettingsUpdate {
   llm_key_id?: number | null;
   monthly_token_budget?: number | null;
   monthly_dollar_budget?: number | null;
+  beta_features?: Record<string, boolean> | null;
 }
 
 export interface KeyTestResult {
@@ -176,6 +180,53 @@ export interface SkillFileUpload {
   bytes: number;
 }
 
+/** What the meta-analysis proposes for one rule file. */
+export type SkillEvolutionAction = "modify" | "create" | "delete";
+
+export interface SkillFileModification {
+  file_path: string;
+  action: SkillEvolutionAction;
+  rationale: string;
+  evidence_review_ids: number[];
+  original_content: string;
+  proposed_content: string;
+  unified_diff: string;
+}
+
+export interface SkillEvolutionHistory {
+  days: number;
+  reviews: number;
+  threads: number;
+  interactions: number;
+}
+
+export interface SkillEvolutionAnalysis {
+  analysis_summary: string;
+  file_modifications: SkillFileModification[];
+  history: SkillEvolutionHistory;
+  warnings: string[];
+}
+
+/** One approved edit: the operator's final text, after any in-browser edit. */
+export interface SkillEvolutionFileChange {
+  file_path: string;
+  action: SkillEvolutionAction;
+  content: string;
+}
+
+export interface SkillEvolutionApplyResponse {
+  foundation: string;
+  applied: string[];
+  backup_path: string | null;
+  warnings: string[];
+}
+
+export interface SkillEvolutionCloneResponse {
+  foundation: Foundation;
+  applied: string[];
+  warnings: string[];
+}
+
 export interface CreateReviewAccepted {
   id: number;
   status: ReviewStatus;
@@ -203,7 +254,7 @@ export interface ReviewUsage {
   latency_ms: number;
 }
 
-export type LLMPurpose = "ingest" | "discuss" | "verdict" | "summarise";
+export type LLMPurpose = "ingest" | "discuss" | "verdict" | "summarise" | "polish" | "evolve";
 export type BudgetLevel = "ok" | "warn" | "over";
 
 export interface AnalyticsTotals {
@@ -354,13 +405,6 @@ export interface ReviewWatch {
   created_at: string | null;
 }
 
-export interface DiscussResultItem {
-  thread_id: number;
-  ok: boolean;
-  error: string | null;
-  references: number[];
-}
-
 export interface AuthUser {
   id: number;
   email: string;
@@ -374,9 +418,23 @@ export interface ThreadOption {
   excerpt: string;
 }
 
-export interface DiscussResponse {
-  review: CodeReviewDetail;
-  results: DiscussResultItem[];
+/** Events from POST /reviews/{id}/discuss/stream; `done` is always last (absent on abort). */
+export type DiscussionStreamEvent =
+  | { type: "thread_started"; thread_id: number }
+  | { type: "delta"; thread_id: number; text: string }
+  | { type: "thread_done"; thread_id: number; message_id: number; references: number[] }
+  | { type: "thread_error"; thread_id: number; error: string; references: number[] }
+  | {
+      type: "done";
+      answered: number;
+      failed: number;
+      opinion_refreshed: boolean;
+      warnings: string[];
+    };
+
+export interface DiscussionDone {
+  answered: number;
+  failed: number;
   opinion_refreshed: boolean;
   warnings: string[];
 }
@@ -417,4 +475,21 @@ export interface CodeReviewDetail extends CodeReviewSummary {
   watch: ReviewWatch | null;
   threads: ReviewThread[];
   warnings: string[];
+}
+
+export interface BetaFeature {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface LessonDraft {
+  title: string;
+  body: string;
+}
+
+export interface LessonApplyResult {
+  path: string;
+  foundation: string;
+  lesson_id: number;
 }

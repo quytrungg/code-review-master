@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, CardBody } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { QuickReviewPanel } from "@/components/QuickReviewPanel";
+import { StartReviewModal } from "@/components/StartReviewModal";
 import { api, ApiError } from "@/services/api";
 import { relativeTime } from "@/lib/utils";
 import type { CachedPR, InboxStatus, QuickReviewEvent } from "@/types";
@@ -41,7 +42,7 @@ export function InboxPage() {
   const [repoFilter, setRepoFilter] = useState("");
   const [unreadOnly, setUnreadOnly] = useState(false);
   const [quickAction, setQuickAction] = useState<{ pr: CachedPR; event: QuickReviewEvent } | null>(null);
-  const [startingId, setStartingId] = useState<number | null>(null);
+  const [startTarget, setStartTarget] = useState<CachedPR | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -88,27 +89,12 @@ export function InboxPage() {
     }
   }
 
-  async function startReview(pr: CachedPR) {
-    setStartingId(pr.id);
-    setError(null);
-    try {
-      if (pr.linked_review_id) {
-        navigate(`/reviews/${pr.linked_review_id}`);
-        return;
-      }
-      const catalog = await api.listModels();
-      const model = catalog.preferred ?? catalog.models.find((option) => option.available)?.id;
-      if (!model) {
-        setError("No usable model found. Configure one in Settings before starting a review.");
-        return;
-      }
-      const review = await api.createReview(pr.pr_url, model);
-      navigate(`/reviews/${review.id}`);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not start the review.");
-    } finally {
-      setStartingId(null);
+  function startReview(pr: CachedPR) {
+    if (pr.linked_review_id) {
+      navigate(`/reviews/${pr.linked_review_id}`);
+      return;
     }
+    setStartTarget(pr);
   }
 
   function applyUpdate(updated: CachedPR) {
@@ -201,7 +187,6 @@ export function InboxPage() {
             <ul className="space-y-2">
               {items.map((pr) => {
                 const meta = STATUS_META[pr.status];
-                const busy = startingId === pr.id;
                 return (
                   <li
                     key={pr.id}
@@ -247,19 +232,14 @@ export function InboxPage() {
                         <Button
                           variant="secondary"
                           size="sm"
-                          disabled={busy}
-                          onClick={() => void startReview(pr)}
+                          onClick={() => startReview(pr)}
                           title={
                             pr.linked_review_id
                               ? "Open the in-app AI review for this pull request"
                               : "Start an AI review of this pull request"
                           }
                         >
-                          {busy ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <Sparkles className="h-3.5 w-3.5" />
-                          )}
+                          <Sparkles className="h-3.5 w-3.5" />
                           {pr.linked_review_id ? "Open review" : "AI review"}
                         </Button>
                         <Button
@@ -307,6 +287,17 @@ export function InboxPage() {
           event={quickAction.event}
           onClose={() => setQuickAction(null)}
           onDone={applyUpdate}
+        />
+      ) : null}
+
+      {startTarget ? (
+        <StartReviewModal
+          pr={startTarget}
+          onClose={() => setStartTarget(null)}
+          onStarted={(reviewId) => {
+            setStartTarget(null);
+            navigate(`/reviews/${reviewId}`);
+          }}
         />
       ) : null}
     </div>

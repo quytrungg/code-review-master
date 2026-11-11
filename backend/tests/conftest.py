@@ -104,11 +104,13 @@ def reset_settings(client):
     from app.models.settings import Settings
     from app.models.watch import ReviewWatch
     from app.services.progress import bus
+    from app.models.lesson import SkillLesson
 
     db = SessionLocal()
     try:
         # Children first: `cached_prs` and `review_watches` point at `code_reviews`, and these
         # deletes bypass the ORM cascade, so deleting the review first leaves dangling rows.
+        db.query(SkillLesson).delete()
         db.query(CachedPR).delete()
         db.query(ReviewWatch).delete()
         db.query(ThreadMessage).delete()

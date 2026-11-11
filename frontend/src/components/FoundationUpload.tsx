@@ -94,7 +94,7 @@ export function FoundationUpload({ onCreate, busy }: FoundationUploadProps) {
           />
           <p className="text-xs text-inkMuted">
             {files.length > 0
-              ? `${files.length} file(s) selected — only .md and .txt are kept.`
+              ? `${files.length} file(s) selected — only .md, .txt and .yml are kept.`
               : "Pick a folder; its relative paths are preserved and one shared wrapper folder is stripped."}
           </p>
         </div>
@@ -109,7 +109,7 @@ export function FoundationUpload({ onCreate, busy }: FoundationUploadProps) {
           <p className="text-xs text-inkMuted">
             {archive
               ? `${archive.name} (${Math.round(archive.size / 1024)} KB)`
-              : "The archive is extracted server-side; .md and .txt files are kept."}
+              : "The archive is extracted server-side; .md, .txt and .yml files are kept."}
           </p>
         </div>
       )}

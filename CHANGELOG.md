@@ -9,6 +9,177 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 38 — Tab title and site icon — 2026-11-11
+
+Plan: `docs/plans/phase_38_plan.md`. Frontend only; no migration.
+
+### Changed
+
+- **Browser tab title.** Reads `Code Review Assistant` (was `AI Code Review Assistant`), matching
+  the navbar wordmark.
+
+### Added
+
+- **Site icon.** A dedicated mark — accent-gradient plate, diff bars above a bold check — shipped
+  as `favicon.svg` (canonical, `image/svg+xml`), `favicon.ico` (16/32/48 fallback for clients that
+  request it by convention) and `apple-touch-icon.png` (180 px full-bleed for iOS). Assets live in
+  `frontend/public/`, so Vite copies them to `dist/` and the single-container `FRONTEND_DIR` mount
+  serves them unchanged.
+
+---
+
+## Phase 37 — Theme toggle and nav order — 2026-11-11
+
+Plan: `docs/plans/phase_37_plan.md`. Frontend only; no migration.
+
+### Added
+
+- **Light/dark theme toggle.** A sun/moon button right of Settings flips the whole app; the
+  choice persists in `localStorage` and applies before first paint, so there is no flash on
+  reload. The palette moved from hard-coded hex in `tailwind.config.js` to CSS-variable channels
+  (dark keeps its exact values, so dark mode is pixel-identical), which keeps every opacity
+  modifier working under both themes.
+
+### Changed
+
+- **Navbar order.** Reviews now leads; PR Inbox sits to its right (was: inbox first).
+- **Markdown bold in light mode.** `.md-body strong` stays white in dark and becomes ink on
+  light cards, where pure white would vanish.
+
+---
+
+## Phase 36 — Push-back lessons: record a rejected finding as a skill rule — 2026-11-11
+
+Plan: `docs/plans/phase_36_plan.md`. Migration `0018_skill_lessons` adds the `skill_lessons`
+attribution table. Initiative 6 (INITIATIVES.md §6), beta-gated behind phase 35's
+`push_back_lessons` flag.
+
+### Added
+
+- **Push back can teach the skill library.** With the flag on, pushing back an AI finding opens a
+  two-step dialog: *record the lesson from this push back in a skill foundation?* — **No** pushes
+  back exactly as before; **Yes** drafts a rule from the finding and its discussion with one model
+  call (`purpose="lesson"` in the ledger), lets the reviewer pick the foundation and edit the
+  wording, then writes it as `lessons/<filetype>-<slug>.md`. The filetype token is what makes
+  `skill_loader` select the file for future reviews of the same file type.
+- **`POST /api/reviews/{id}/threads/{id}/lesson/draft` and `.../lesson`.** Both are flag-checked
+  (422 when the beta feature is off), ownership-checked (another account's thread is a 404, never a
+  403), and the lesson lands *before* the push-back decision — a draft or write failure never
+  blocks the push back. `skill_lessons` rows cite the review and thread; the file header does too.
+- **Serverless fallback.** Where skill writes are disabled, the dialog offers copy-to-clipboard of
+  the lesson markdown instead of a save, and writes nothing.
+
+### Notes
+
+- `lessons_service` raises its own `LessonError` rather than importing `PipelineError`: the
+  routes' import order exposes a pre-existing cycle (`review_pipeline → thread_sync →
+  apply_service → review_pipeline`) that a module-level import from the new service trips.
+- `LLMPurpose` gains `LESSON`, so spend per model on Analytics splits the draft calls out.
+
+---
+
+## Phase 35 — Beta features section in Settings — 2026-11-11
+
+Plan: `docs/plans/phase_35_plan.md`. Migration `0017_beta_features` adds `settings.beta_features`.
+
+### Added
+
+- **A Beta features card in Settings.** One toggle per known beta flag, rendered from the
+  server's registry (`beta_registry` on `GET /api/settings`) rather than hardcoded ids, so the
+  UI never needs a change to gain the next flag. Flags are stored per account in
+  `settings.beta_features` (`{}`, i.e. all off, by default) — no localStorage, no URL params.
+- **The first flag: `push_back_lessons`.** Off by default; phase 36 puts the push-back lesson
+  offer behind it. This phase ships the toggle and the storage only.
+- **`PUT /api/settings` accepts `beta_features`** as a full-dict replace: an id not in the
+  registry is a `422` and persists nothing; an absent field leaves the flags untouched and an
+  explicit `null` clears them (the soft-cap fields' semantics).
+- **`settings_service.beta_enabled(db, user_id, flag)`** for services: `False` for an unknown
+  flag, an account with no settings row, or an unset flag — the gate phase 36 reads.
+
+---
+
+## Phase 34 — Skill Evolution: guideline edits from your review history — 2026-11-11
+
+Plan: `docs/plans/phase_34_plan.md`. No migration.
+
+### Added
+
+- **The Skills tab can now improve itself.** Pick a skill foundation and a model, press
+  **Evolve from review history**, and the backend reads the last 30 days of that account's review
+  sessions — the push-backs, the withdrawn findings, the findings the reviewer rewrote before
+  publishing — and asks the model to propose concrete edits to the guideline files.
+- **A GitHub-style diff workbench.** Every proposed file is listed with its rationale and the
+  review ids that motivated it, rendered as a unified or side-by-side diff, individually
+  acceptable or rejectable, and editable before saving.
+- **Apply, or clone and apply.** *Apply changes* writes the accepted files into the foundation in
+  place after copying the previous state to
+  `code-review-foundations/.backups/<foundation>_<timestamp>/`. *Clone and apply* copies the
+  foundation into a brand-new one and writes the accepted files there, leaving the original
+  untouched; the clone is registered immediately, because the filesystem is the source of truth.
+- **Three endpoints.** `POST /api/skills/{foundation_id}/analyze-history`,
+  `POST /api/skills/{foundation_id}/apply` and `POST /api/skills/{foundation_id}/clone-and-apply`.
+
+### Changed
+
+- **Foundation files may be `.yml`** as well as `.md` and `.txt`, and the skill loader reads them
+  too — a machine-readable rule file now reaches the prompt like any other.
+- The `llm_calls` ledger has a new `evolve` purpose, so the meta-analysis is recorded like every
+  other model call. It belongs to no single review, so it is not attributed to an account in the
+  analytics page (the same treatment the inbox's polish call already had).
+
+### Security
+
+- Every path written by the engine is re-validated server-side: `..`, absolute paths, Windows
+  drive paths, hidden directories and unsupported extensions are refused with `400` before
+  anything is written, and the resolved path is proven to stay inside the foundation.
+
+---
+
+## Phase 33 — Streaming discussion replies, per-thread retry and cancel — 2026-11-11
+
+Plan: `docs/plans/phase_33_plan.md`. No migration.
+
+### Added
+
+- **Streaming discussion endpoint.** `POST /api/reviews/{id}/discuss/stream` answers each drafted
+  thread over Server-Sent Events — `thread_started`, `delta` chunks, `thread_done`/`thread_error`
+  per thread, and a terminal `done` with counts and the opinion-refresh flag. Validation errors
+  (404/400/422) still come back as JSON before the stream opens, and `POST /discuss` keeps its
+  exact JSON contract.
+- **Provider streaming.** One `stream_chat`-style path per adapter (`llm_service.stream`):
+  Anthropic SDK streaming, OpenAI `stream=true` with `stream_options.include_usage`, Ollama NDJSON.
+  Streamed calls land in the `llm_calls` ledger with the terminal frame's usage, so cost/latency
+  analytics cover discussion calls exactly like blocking ones.
+- **Live replies in the workspace.** Each card renders the answer as it streams with a caret,
+  tail-scrolling unless you scroll up; the footer shows "N of M answered" and a **Stop** button
+  that aborts the remaining threads within a moment. A failed card gets a **Retry** button that
+  resubmits just that draft.
+
+### Changed
+
+- **Per-thread atomic persistence.** The streaming path writes a thread's user + assistant
+  messages together in one short transaction when the answer completes, so a failed or stopped
+  thread leaves nothing behind — no orphan user message — and the draft stays in the composer.
+  The JSON endpoint keeps its eager user-message persistence for compatibility.
+- **Discussion prompts now include the just-sent question even when it was never persisted** —
+  shared preparation (`prepare_discussion`) appends it as a transient transcript tail.
+
+---
+
+## Phase 32 — Inbox: model and skill picker before starting a review — 2026-11-11
+
+Plan: `docs/plans/phase_32_plan.md`. Frontend only; no migration.
+
+### Changed
+
+- **The inbox's AI review button asks before it starts.** Instead of immediately starting a review
+  with the preferred model and default foundation, the button opens a modal with a model select
+  (default = preferred model) and a skill-foundation select (default = the default foundation), then
+  posts the chosen pair to `POST /reviews`. Rows with an existing review still navigate straight to
+  it.
+
+---
+
 ## Phase 31 — Inbox: authored and assigned PRs — 2026-11-11
 
 Plan: `docs/plans/phase_31_plan.md`. Migration `0016_inbox_involvement` adds `cached_prs.involvement`.

@@ -6,11 +6,13 @@ import { Card } from "@/components/ui/Card";
 import { CodeSnippetBox } from "@/components/CodeSnippetBox";
 import { CommentBox } from "@/components/CommentBox";
 import { IngestProgress } from "@/components/IngestProgress";
+import { PushBackLessonModal } from "@/components/PushBackLessonModal";
 import { ReviewHeader } from "@/components/ReviewHeader";
 import { SplitPane } from "@/components/SplitPane";
 import { StickyActionBar } from "@/components/StickyActionBar";
 import { ThreadFilterBar, type FilterCounts, type ThreadFilter } from "@/components/ThreadFilterBar";
 import { WarningsBanner } from "@/components/WarningsBanner";
+import { useDiscussionStream } from "@/hooks/useDiscussionStream";
 import { useReviewDrafts } from "@/hooks/useReviewDrafts";
 import { applyButtonLabel, pendingApplyCount } from "@/lib/utils";
 import { api, ApiError } from "@/services/api";
@@ -31,15 +33,18 @@ export function ReviewDetailPage() {
   const [filter, setFilter] = useState<ThreadFilter>("all");
   const [syncing, setSyncing] = useState(false);
   const [decidingRoundId, setDecidingRoundId] = useState<number | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [applying, setApplying] = useState(false);
-  const [sendingIds, setSendingIds] = useState<number[]>([]);
   const [threadErrors, setThreadErrors] = useState<Record<number, string>>({});
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [applyWarnings, setApplyWarnings] = useState<string[]>([]);
+  // Beta features (Settings): push-back lessons. `null` until the settings load.
+  const [lessonsEnabled, setLessonsEnabled] = useState<boolean | null>(null);
+  const [uploadsEnabled, setUploadsEnabled] = useState(false);
+  const [pendingPushBack, setPendingPushBack] = useState<{ roundId: number; threadId: number } | null>(null);
 
   const { drafts, setDraft, clearDrafts, pendingIds, pendingCount } = useReviewDrafts();
+  const discussion = useDiscussionStream();
   const codeRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
   const load = useCallback(async () => {
@@ -66,6 +71,24 @@ export function ReviewDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Beta features and the skill-upload capability decide whether Push back opens the
+  // lesson modal, and whether it can save or only offer copy-to-clipboard.
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([api.getSettings(), api.listSkills()])
+      .then(([settings, skills]) => {
+        if (cancelled) return;
+        setLessonsEnabled(Boolean(settings.beta_features?.push_back_lessons));
+        setUploadsEnabled(skills.uploads_enabled);
+      })
+      .catch(() => {
+        if (!cancelled) setLessonsEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleIngestFinished = useCallback(() => {
     void load();
@@ -136,51 +159,50 @@ export function ReviewDetailPage() {
     }
   }
 
-  async function submitDrafts() {
-    if (!review || pendingIds.length === 0) return;
-    setSubmitting(true);
-    setSendingIds(pendingIds);
+  function submitDrafts(onlyThreadId?: number) {
+    if (!review || discussion.active) return;
+    const ids = onlyThreadId ? [onlyThreadId] : pendingIds;
+    const entries = ids
+      .map((threadId) => ({ thread_id: threadId, message: (drafts[threadId] ?? "").trim() }))
+      .filter((entry) => entry.message.length > 0);
+    if (entries.length === 0) return;
     setActionError(null);
     setNotice(null);
     setThreadErrors({});
-    try {
-      const response = await api.discuss(
-        review.id,
-        pendingIds.map((threadId) => ({
-          thread_id: threadId,
-          message: (drafts[threadId] ?? "").trim(),
-        })),
-      );
-      setReview(response.review);
-      const succeeded = response.results.filter((result) => result.ok).map((result) => result.thread_id);
-      const failed = response.results.filter((result) => !result.ok);
-      clearDrafts(succeeded);
-      if (failed.length > 0) {
-        setThreadErrors(
-          Object.fromEntries(
-            failed.map((result) => [result.thread_id, result.error ?? "The model did not reply."]),
-          ),
-        );
-      }
-      setNotice(
-        `${succeeded.length} repl${succeeded.length === 1 ? "y" : "ies"} added` +
-          (failed.length > 0 ? ` · ${failed.length} failed (draft kept)` : "") +
-          (response.opinion_refreshed
-            ? ` · AI opinion updated to ${response.review.suggested_verdict ?? "unknown"}` +
-              (response.review.confidence_percentage !== null
-                ? ` (${response.review.confidence_percentage}%)`
-                : "")
-            : response.warnings.length > 0
-              ? ` · ${response.warnings[0]}`
-              : ""),
-      );
-    } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : "Failed to submit responses");
-    } finally {
-      setSubmitting(false);
-      setSendingIds([]);
-    }
+    discussion.start(review.id, entries);
   }
+
+  // One settlement per submit (normal `done`, Stop, or a dead connection): refetch what the
+  // server persisted, release the drafts it answered, and pin errors on the cards it did not.
+  useEffect(() => {
+    const info = discussion.doneInfo;
+    if (!info) return;
+    void load();
+    const succeeded = Object.entries(discussion.threads)
+      .filter(([, thread]) => thread.status === "done")
+      .map(([id]) => Number(id));
+    clearDrafts(succeeded);
+    const errors: Record<number, string> = {};
+    for (const [id, thread] of Object.entries(discussion.threads)) {
+      if (thread.status === "error") {
+        errors[Number(id)] = thread.error ?? "The model did not reply.";
+      } else if (thread.status === "stopped") {
+        errors[Number(id)] = "Stopped before the reply arrived — retry when ready.";
+      }
+    }
+    if (Object.keys(errors).length > 0) setThreadErrors(errors);
+    const unanswered = Object.keys(errors).length;
+    setNotice(
+      `${succeeded.length} repl${succeeded.length === 1 ? "y" : "ies"} added` +
+        (unanswered > 0 ? ` · ${unanswered} failed (draft kept)` : "") +
+        (info.opinion_refreshed
+          ? " · AI opinion updated"
+          : info.warnings.length > 0
+            ? ` · ${info.warnings[0]}`
+            : ""),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discussion.doneInfo]);
 
   async function syncFromGithub() {
     if (!review) return;
@@ -204,6 +226,33 @@ export function ReviewDetailPage() {
     } finally {
       setSyncing(false);
     }
+  }
+
+  /**
+   * RoundPanel's Push back routes through here when the beta flag is on and the finding is
+   * ours; otherwise every decision goes straight through as before.
+   */
+  function handleDecide(roundId: number, decision: RoundDecision) {
+    if (decision !== "push_back" || !lessonsEnabled || !review) {
+      void decideRound(roundId, decision);
+      return;
+    }
+    const thread = review.threads.find((item) =>
+      item.rounds.some((round) => round.id === roundId),
+    );
+    if (!thread || thread.origin !== "AI_GENERATED") {
+      void decideRound(roundId, decision);
+      return;
+    }
+    setPendingPushBack({ roundId, threadId: thread.id });
+  }
+
+  /** The modal resolved — the push back proceeds either way, with or without a saved lesson. */
+  function resolvePushBack(applied: { path: string; foundation: string } | null) {
+    const pending = pendingPushBack;
+    setPendingPushBack(null);
+    if (pending) void decideRound(pending.roundId, "push_back");
+    if (applied) setNotice(`Lesson recorded in ${applied.foundation} — ${applied.path}`);
   }
 
   async function decideRound(roundId: number, decision: RoundDecision, summary?: string) {
@@ -366,10 +415,22 @@ export function ReviewDetailPage() {
               onSelect={() => setSelectedId(thread.id)}
               onDraftChange={(value) => setDraft(thread.id, value)}
               onJumpToOrdinal={jumpToOrdinal}
-              onDecide={(roundId, decision) => void decideRound(roundId, decision)}
+              onDecide={handleDecide}
               onSaveSummary={(roundId, text) => void decideRound(roundId, "accept", text)}
               decidingRoundId={decidingRoundId}
-              sending={sendingIds.includes(thread.id)}
+              sending={discussion.threads[thread.id]?.status === "sending"}
+              streamText={
+                discussion.threads[thread.id]?.status === "sending"
+                  ? discussion.threads[thread.id].text
+                  : undefined
+              }
+              onRetry={
+                threadErrors[thread.id] &&
+                !discussion.active &&
+                (drafts[thread.id] ?? "").trim()
+                  ? () => submitDrafts(thread.id)
+                  : undefined
+              }
               submitDisabledReason={threadErrors[thread.id] ?? null}
             />
           ))}
@@ -388,9 +449,13 @@ export function ReviewDetailPage() {
           onUseAiVerdict={
             review.suggested_verdict ? () => setVerdict(review.suggested_verdict!) : undefined
           }
-          onSubmit={() => void submitDrafts()}
+          onSubmit={() => submitDrafts()}
           onApply={() => void applyToGithub()}
-          submitting={submitting}
+          submitting={discussion.active}
+          submitProgress={
+            discussion.active ? { answered: discussion.answered, total: discussion.total } : null
+          }
+          onStop={discussion.stop}
           applying={applying}
           applyLabel={applyLabel}
           applyCount={pending.total}
@@ -401,6 +466,20 @@ export function ReviewDetailPage() {
           notice={notice}
         />
       ) : null}
+
+      {pendingPushBack && review
+        ? (() => {
+            const thread = review.threads.find((item) => item.id === pendingPushBack.threadId);
+            return thread ? (
+              <PushBackLessonModal
+                reviewId={review.id}
+                thread={thread}
+                uploadsEnabled={uploadsEnabled}
+                onResolve={resolvePushBack}
+              />
+            ) : null;
+          })()
+        : null}
     </div>
   );
 }

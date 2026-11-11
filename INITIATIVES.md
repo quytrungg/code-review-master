@@ -1,7 +1,7 @@
 # INITIATIVES — what to build next
 
-Last updated: 2026-11-08 · Covers phases 1–20 (phase 21, S3 skill storage, is still a design
-record only).
+Last updated: 2026-11-11 · Covers phases 1–33 (phases 21–33 shipped or in flight since the last
+update; initiative 5, streaming, was taken forward as phase 33).
 
 This file is a backlog, not a plan. Each entry below is a candidate feature with enough evidence
 that the first question — *is this a real gap?* — is already answered. Per `AGENTS.md` §1, no
@@ -16,7 +16,12 @@ Ideas are ranked by **value ÷ effort**, not by how interesting they are to buil
 | 2 | ~~Multi-pass review of large diffs~~ | Shipped in phase 26 — see §2 for the deviations | M–L | no |
 | 3 | ~~Watch a PR and review new commits~~ | Shipped in phase 27 — see §3 for the deviations | XL | yes |
 | 4 | ~~LLM call ledger and quality analytics~~ | Shipped in phase 22 — see §4 for the deviations | M | yes |
-| 5 | Streaming replies, per-thread retry, cancel | The most visible UX wart in the product | L | no |
+| 5 | ~~Streaming replies, per-thread retry, cancel~~ | Shipped in phase 33 — see §5 for the deviations | L | no |
+| 6 | ~~Learn my standards: push-backs become skill rules~~ | Shipped in phase 36 — see §6 for the deviations (beta-gated by phase 35) | M | yes |
+| 7 | Deterministic pre-pass checks before the model | Secret and hygiene catches with zero tokens | S–M | no |
+| 8 | Standing review policies on the inbox | The queue stops needing clicks to move | M–L | yes |
+| 9 | Cross-review finding search and recurring issues | "We have flagged this three times before" | M | yes |
+| 10 | Side-by-side model comparison | Answers the folklore question with data | M | no |
 
 ---
 
@@ -279,7 +284,21 @@ review.
 
 ---
 
-## 5. Streaming replies, per-thread retry and cancel
+## 5. Streaming replies, per-thread retry and cancel — shipped, phase 33
+
+> Built as `docs/plans/phase_33_plan.md`. Deviations from the sketch below: the README line "No
+> streaming" no longer existed (the evidence was stale; the README gained a highlight sentence
+> instead); the terminal `done` event carries counts plus the opinion-refresh flag and the UI
+> refetches the review rather than receiving it embedded; and `llm_service.stream()` on_delta is a
+> plain callback, not a generator, so cancellation propagates as an ordinary coroutine cancel.
+> The per-thread persistence rule landed exactly as sketched — user + assistant messages commit
+> together only when the answer completes — which meant the discussion prompt had to learn to
+> include a question that may never be persisted (a transient transcript tail in
+> `prepare_discussion`). Verified end to end against a streaming Ollama mock: a 3-thread submit
+> issued 3 `stream=true` chat calls plus one verdict call; the footer read "0 of 2 answered" with
+> a working Stop mid-flight; a forced 500 produced a `thread_error` card with a working Retry; a
+> Stop at ~350ms persisted nothing for either thread (reload showed no orphan user messages).
+
 
 **Problem.** `POST /api/reviews/{id}/discuss` runs every thread through `asyncio.gather` and
 returns when the slowest one finishes. The UI shows a per-card spinner until then. With a local
@@ -365,6 +384,284 @@ Real gaps, deliberately deferred — cheapest first:
 - **Prompt-injection hardening.** The diff is untrusted input and is currently presented to the
   model as instructions-adjacent text. Delimiting it and testing that a malicious hunk cannot
   rewrite the output contract is cheap insurance. S, no schema change.
+
+---
+
+## 6. Learn my standards: turn push-backs into skill-library rules — shipped, phase 36
+
+> Built as `docs/plans/phase_36_plan.md` behind phase 35's `push_back_lessons` beta flag, with the
+> operator's revisions: no proposal queue, no decision columns — the question is asked inline at
+> the push back. Deviations from the text below: `RoundPanel` needed no change (the page intercepts
+> the decision), `LLMPurpose` gained `LESSON` for the ledger, and the lesson service raises its own
+> error type rather than importing `PipelineError` (import cycle).
+
+**Problem.** The product's pitch is *"your standards, not generic advice"* — yet the standards only
+ever flow one way. When a reviewer pushes back on a finding ("not a bug in this repo, we allow
+bare `except:` in migrations"), that correction lives in `thread_messages.content` and dies when the
+round is published. `thread_rounds` records status and published text but nothing structured about
+*why* a finding was rejected (`backend/app/models/review.py`). The next PR from the same repo gets
+the same false positive, because the skill library — the only place the model learns standards —
+is maintained entirely by hand.
+
+The raw material is already produced: push-backs are explicit decisions, the thread knows its
+`file_path`, and ingest knows which skill files were selected for that file type. None of it is
+captured.
+
+**Proposal.** Revised 2026-11-11 after review, with two changes from the sketch above: the
+proposal queue and the structured decision columns are gone — the question is asked inline at the
+moment of the push back — and the whole feature is gated behind the phase 34 beta toggle, off by
+default.
+
+1. **Beta gate.** The flow exists only when the `push_back_lessons` beta flag is on (phase 34's
+   settings section). Flag off, or flag unknown: Push back behaves exactly as today — no modal, no
+   extra call.
+2. **Modal on push back.** With the flag on, clicking Push back opens a modal *before* the round
+   resolves: "Record the lesson from this push back in a skill foundation?" — **No** dismisses it
+   and the push back proceeds exactly as today (publish nothing, withdraw the finding). **Yes**
+   goes to step two.
+3. **Pick a foundation, then apply.** Step two shows the skill-foundation picker (`GET /skills`)
+   and a lesson title and body drafted by one small model call from the finding and its discussion
+   — editable inline, because the reviewer, not the model, decides what the rule says. **Apply**
+   writes the lesson into the chosen foundation as one markdown file and records attribution, then
+   the push back proceeds. The file is written only on Apply — Cancel writes nothing.
+4. **File naming for selection.** `skill_loader` scores files by path tokens (`_score`), so the
+   lesson file must carry the finding's file type to ever be loaded again:
+   `lessons/<filetype>-<slug>.md` (e.g. `lessons/python-n-plus-one-query.md`). A lesson that never
+   reaches a future prompt is a diary entry, not a rule.
+5. **Attribution.** A `skill_lessons` row (`thread_id`, `foundation`, `path`, `title`, `created_at`)
+   links the rule back to the finding that produced it — "lesson recorded" on the thread, and the
+   file header cites the review and thread.
+6. **Serverless fallback.** Skill writes are disabled when `SERVERLESS=true`
+   (`skills_service.require_writable`); there the Apply step becomes copy-to-clipboard with the
+   markdown body, and no attribution row is written (nothing was applied).
+
+**Touch points.** Phase 34's beta flag (`settings.beta_features`, `settings_service.beta_enabled`);
+migration `0018_skill_lessons` (attribution table only — no decision columns, no proposals);
+new `services/lessons_service.py` (draft + write, reusing `skills_service.save_skill_file`);
+`api/routes/reviews.py` (lesson draft + apply endpoints, flag-checked);
+`apply_service.decide_round` (nothing — the lesson lands before the decision is sent); frontend:
+new `PushBackLessonModal.tsx`, wiring in `RoundPanel.tsx` + `ReviewDetailPage.tsx`, `api.ts`,
+`types/index.ts`, `SettingsPage.tsx` (nothing — phase 34 owns the toggle).
+
+**Risks.**
+
+- **Rule quality.** A model-drafted rule is a finding about a finding; it must state scope (file
+  type, path pattern) or it will over-suppress. The draft prompt demands the scope line, and the
+  reviewer can edit before applying.
+- **Scope creep of the flag.** This is the first beta feature; the gate must stay a plain boolean
+  read at the call site, not grow a config system. One flag, one feature.
+- **Privacy.** The draft call sends the finding plus the discussion to the provider — the same data
+  the discussion already sent, so no new exposure; the stored lesson is the reviewer-approved text
+  only.
+
+**Verification.** Flag off: Push back resolves the round with no modal and no LLM call. Flag on,
+"No": identical round outcome to today. Flag on, "Yes" → foundation picked → Apply: the foundation
+contains `lessons/<filetype>-<slug>.md`, the `skill_lessons` row cites the thread, and the *next*
+review's loaded bundle includes the lesson (assert on the built prompt). Cancel writes no file.
+Another account's thread is a `404`, never a `403`. On serverless, Apply offers clipboard copy and
+writes nothing.
+
+---
+
+## 7. Deterministic pre-pass checks before the model
+
+**Problem.** The model is the *only* analysis layer — every finding costs a call, and the things a
+regex catches with absolute certainty are exactly where LLMs are weakest: an AWS key pasted into a
+fixture, a `.env` diff, a conflict marker, a `console.log` left in, `.skip()` appended to a test.
+There is no pattern service anywhere in `backend/app/services/` (verified: no gitleaks, regex or
+pattern module), so a review can *cost tokens and still miss a literal secret* — the worst
+quality-per-dollar outcome the product has.
+
+These checks need zero tokens, run in milliseconds, and are explainable in one line, which makes
+them the cheapest credibility the tool can buy.
+
+**Proposal.**
+
+1. **A check packs service** — config-driven regex packs shipped alongside the skill library:
+   `secrets` (high-entropy strings, known key prefixes: `AKIA`, `ghp_`, `sk-`, `-----BEGIN PRIVATE
+   KEY`), `hygiene` (conflict markers, debugger prints, `.skip()`/`.only` in tests, `TODO` before
+   release-blocking tags), off by default, enabled per review or globally in settings.
+2. **Run after `diff_parser`, before the model call** — over the same parsed hunks, findings
+   anchored through the existing anchoring path, so they are first-class threads: discussable,
+   acceptable, publishable like any finding. `origin` gains a `CHECK` value (`String(16)`, no
+   migration) with a deterministic severity set by the pack.
+3. **The prompt knows.** An ingestion note states "3 deterministic findings exist (2 secrets, 1
+   hygiene)" so the model does not re-report the same line — mirrors how multi-pass announces
+   truncation.
+4. **No false-positive flooding.** A per-review cap per pack, and a finding-level "ignore this
+   pattern for this repo" that feeds initiative 6's proposal queue — the two initiatives are
+   natural companions.
+
+**Touch points.** New `backend/app/services/checks_service.py` (pack definitions as data, not
+code), `review_pipeline.py` (a stage between parse and model call), `services/progress.py` (one
+row: "Deterministic checks: 2 secrets, 1 hygiene issue"), `core/config.py` (enabled packs, caps),
+`ThreadOrigin` widening, frontend (nothing — findings already render; maybe a Badge for CHECK
+origin), tests with a fixture diff containing one real-shaped key.
+
+**Risks.**
+
+- **False positives on test fixtures.** Key-shaped strings in test fixtures are legitimate; the
+  pack must recognise `test`, `fixture`, `mock` path hints or accept a path-based allowlist.
+- **Pack sprawl.** Regex packs want to grow into a lint engine. They must stay at "things a
+  reviewer would block a PR for", not a style checker; the plan should name the cut-off.
+
+**Verification.** A diff containing a `ghp_…` token produces one anchored CHECK finding with zero
+`llm_calls` rows; the finding publishes to GitHub like a model finding; a pack disabled in settings
+produces none; the ingestion note appears and the model does not duplicate the line.
+
+---
+
+## 8. Standing review policies on the inbox
+
+**Problem.** The pieces now exist independently but refuse to compose. The inbox (phase 28/31)
+discovers PRs waiting on the user; watches (phase 27) review *new pushes* — but only on PRs that
+already have a review, and only after someone clicked. Every first review — the most repeated
+action in the product — still needs a human to notice the row and click (phase 32 made the click
+informative, not automatic). A PR can sit in `needs_review` for days while its author waits.
+
+The gap is not detection (the inbox already finds them) or review creation (`create_running_review`
+works and links the cached row at creation, phase 31) — it is a standing instruction connecting the
+two.
+
+**Proposal.**
+
+1. **`review_policies`** — `id, user_id, repo_pattern (glob), involvement (reviewer|assignee|
+   author|any), model, foundation, enabled, max_active, created_at`. One policy per intent; the
+   model/foundation columns reuse exactly what the phase 32 picker collects.
+2. **Evaluation on the existing ticks.** The watch loop (local/Docker) and the serverless
+   `POST /api/watches/tick` both already wake up periodically; a policy evaluation runs on the same
+   tick, against the cached inbox rows (no extra GitHub calls until a review starts). A matching PR
+   with no `linked_review_id` gets a review created, which stamps the link and flips the row to
+   "Open review" — all phase 31 machinery, reused verbatim.
+3. **Guardrails.** `max_active` caps concurrent policy-started reviews per policy; a soft monthly
+   ceiling ties into the phase 22 ledger (warn, never block, per its "no hard block" rule); a
+   policy-started review is marked `trigger='policy'` so the UI can say "started automatically".
+4. **Watch composition.** When a policy starts a review, offer (or auto-create, per plan decision)
+   the watch on it — so the PR is covered for its whole life, first push to last.
+
+**Design decision the phase plan must make.** Auto-create the watch with the policy, or leave
+watching explicit? Auto-creation is the coherent default (a standing reviewer should follow
+pushes) but doubles the quota cost per PR; the plan must state which and why.
+
+**Touch points.** New `models/policy.py`, `services/policy_service.py`, `api/routes/policies.py`;
+migration; `watch_service.py` tick (evaluation hook), `github_inbox_service.py` (nothing — reads
+cache), `review_pipeline` (nothing — receives a request like any other), frontend: a Policies panel
+on Settings or the inbox header, a `trigger` badge on review cards.
+
+**Risks.**
+
+- **Spend.** The first initiative that spends tokens without a human in the loop. `max_active`,
+  the soft ceiling, and default-off are the controls; the analytics page must attribute
+  policy-started spend clearly.
+- **Races.** A policy tick and a manual click on the same PR: the manual path wins (the link is
+  stamped at creation), the tick must check the link inside the same transaction that creates the
+  review — the phase 27 `UNIQUE` lesson applies; reuse the pattern.
+- **Review spam on broad patterns.** A `*` repo pattern with `involvement=author` could start
+  reviews on the user's own PRs. Default the pattern to one explicit repo and make widening a
+  deliberate act.
+
+**Verification.** A fixture cached PR matching a policy gets one linked review on tick; a
+non-matching repo gets none; a PR already linked is untouched; two ticks racing produce one review;
+`max_active=1` with two matches queues the second rather than starting it; the ledger rows carry
+`trigger='policy'`.
+
+---
+
+## 9. Cross-review finding search and recurring-issue memory
+
+**Problem.** Every review is an island. Summaries, file paths and discussion text live in
+`review_threads` and `thread_messages` per review, and `GET /api/reviews` is an unfiltered list —
+there is no search anywhere in the backend (verified: no `ilike`/`LIKE`/FTS in the routes). So the
+questions a reviewer actually has are unanswerable: *have we flagged this N+1 pattern in this repo
+before?*, *does every PR from this team re-introduce the same race condition?*, *which previous
+thread argued about this same `dataclass` choice?* The multi-pass merge (phase 26) already
+normalises finding titles for dedup — but only within one review.
+
+Six months of reviews is a corpus of the team's actual defects and disputes; the tool stores it and
+reads none of it.
+
+**Proposal.**
+
+1. **Full-text index over findings** — thread `summary` + first AI message, keyed by review, repo,
+   file path and date. SQLite FTS5 and Postgres `tsvector` both available, one dialect-switching
+   migration; rebuild from existing rows (no backfill semantics beyond the index itself).
+2. **`GET /api/findings/search?q=&repo=&path=&since=`** — scoped search behind the existing
+   ownership rule (another account's rows are a `404`, never a `403`).
+3. **"Seen before" panel on a finding.** On opening a thread, search its normalised title within
+   the same repo: prior matches appear as links ("same pattern as review #8, thread #3 — accepted
+   then"). The phase 26 normalisation is the key; without it every match is a literal-string
+   accident.
+4. **Recurring-issues digest.** Grouped by normalised title per repo, on the analytics page:
+   "Top recurring findings — api client: 5 reviews, 12 findings". This is the first metric that
+   says something about *the codebase*, not the model.
+
+**Touch points.** Migration (FTS table + triggers, dialect-aware — the plan must show the
+`upgrade`/`downgrade` round-trip on both engines), new `services/finding_search.py` +
+`api/routes/findings.py`, `schemas/`, frontend: search box on the dashboard, "seen before" section
+in the workspace's `CommentBox` area, recurring panel on `AnalyticsPage`.
+
+**Risks.**
+
+- **Two engines, one index.** FTS5 and `tsvector` differ in tokenisation and ranking; the plan must
+  pick a lowest-common-denominator query (prefix match on normalised words) or accept
+  engine-specific ranking. This is the initiative's main complexity and the plan must name the
+  choice.
+- **Noise.** Normalised-title grouping will merge siblings that are genuinely different. Match
+  links are evidence, not assertions — copy must say "similar to", never "duplicate of".
+- **Privacy.** Summaries already live in the database and never leave the machine; search adds no
+  exposure. Index text stays out of any prompt.
+
+**Verification.** The same finding text in two reviews in one repo matches and links; the same
+text in another repo does not surface unless repo is unset; a reworded title with the same
+normalised key matches; `upgrade head` + `downgrade -1` round-trips on both SQLite and Postgres
+leaving no orphaned FTS rows; another account's finding is a 404.
+
+---
+
+## 10. Side-by-side model comparison
+
+**Problem.** Phase 22 made model quality *measurable* (acceptance rate, push-back rate, latency,
+cost per model) but only *passively* — the numbers accrue from whatever reviews happened to use
+each model. "Which model should this team use?" is still folklore unless someone runs the same
+reviews twice by hand. The tool is one deliberate step away from answering its own hardest
+question with data: run the same diff through two models and see what each found.
+
+**Proposal.**
+
+1. **"Compare with…" on any review** (and optionally as a checkbox in the phase 32 inbox picker):
+   creates a second review of the same PR with a chosen second model — `parent_review_id` and
+   `trigger='comparison'`, the phase 27 link machinery reused, no new schema.
+2. **A merge view, not two panels.** Findings from both reviews keyed by the anchor
+   `(path, line)` + the phase 26 normalised title — the multi-pass merge logic, applied across
+   reviews: *both*, *A only*, *B only*, with per-finding provenance badges. Discussion and apply
+   flow through the primary review as today; the comparison review is pinned to the same
+   `commit_id` so anchors are directly comparable.
+3. **Ledger integration.** Both runs write `llm_calls` with distinct models; the analytics
+   acceptance/push-back rates then compare the two models on *the same PRs*, which is the only
+   comparison that means anything.
+4. **Cost honesty.** The UI shows the estimated cost of the comparison run before it starts
+   (phase 22 price table) — this is the product's most expensive button and must say so.
+
+**Touch points.** `review_pipeline` (a `trigger` plumbed through creation, no re-fetch of the
+diff — pin both reviews to the same `commit_id`), `api/routes/reviews.py` (`POST /{id}/compare`),
+a comparison merge service (new, small — reuses the `review_units` dedupe helpers), frontend:
+compare button in the workspace header + merge view panel, `types/index.ts`.
+
+**Risks.**
+
+- **Not a benchmark.** One PR compares two models on *one diff*; the value is the trend across
+  many comparisons plus analytics, and the copy must never claim a winner from n=1.
+- **Divergent anchoring.** Two models may report the same defect at neighbouring lines; the anchor
+  key needs a small line-tolerance window, decided in the plan, or "both" undercounts.
+- **Double spend.** Every comparison doubles ingest cost for that PR. Opt-in, priced up front, and
+  the ledger attributes each half clearly.
+
+**Verification.** Two stubbed models with disjoint findings over one diff produce a merge view with
+three buckets and correct provenance; a shared finding at ±2 lines merges into *both*; both runs
+appear in `llm_calls` with their models; the comparison review links back to the parent; the cost
+estimate renders before start.
+
+---
 
 ## Taking one forward
 

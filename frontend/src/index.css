@@ -3,8 +3,44 @@
 @tailwind utilities;
 
 @layer base {
+  /* The entire palette is channels so tailwind.config.js can apply opacity modifiers.
+     Dark is the default theme and keeps the exact pre-phase-37 hex values. */
   :root {
     color-scheme: dark;
+    --canvas: 11 13 18;
+    --surface: 18 21 29;
+    --surface-muted: 23 27 37;
+    --border: 35 40 56;
+    --border-strong: 47 54 80;
+    --ink: 230 233 242;
+    --ink-muted: 154 163 187;
+    --accent: 124 139 255;
+    --accent-strong: 91 107 250;
+    --success: 61 220 151;
+    --warning: 244 193 93;
+    --danger: 255 107 129;
+    --add: 18 53 31;
+    --del: 58 21 32;
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 10px 30px -20px rgba(0, 0, 0, 0.9);
+  }
+
+  [data-theme="light"] {
+    color-scheme: light;
+    --canvas: 246 247 251;
+    --surface: 255 255 255;
+    --surface-muted: 238 241 248;
+    --border: 219 224 236;
+    --border-strong: 190 199 219;
+    --ink: 26 32 48;
+    --ink-muted: 88 99 123;
+    --accent: 91 107 250;
+    --accent-strong: 74 90 234;
+    --success: 13 158 110;
+    --warning: 180 83 9;
+    --danger: 209 47 77;
+    --add: 216 243 226;
+    --del: 252 228 232;
+    --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 10px 30px -22px rgba(26, 32, 48, 0.25);
   }
 
   html,
@@ -67,6 +103,10 @@
 }
 .md-body strong {
   @apply font-semibold text-white;
+}
+[data-theme="light"] .md-body strong {
+  /* Pure white reads on a dark card but vanishes on a light one. */
+  @apply text-ink;
 }
 .md-body blockquote {
   @apply my-2 border-l-2 border-borderStrong pl-3 text-inkMuted;

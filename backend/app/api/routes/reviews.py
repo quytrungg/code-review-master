@@ -20,16 +20,28 @@ from app.schemas.review import (
     CreateReviewRequest,
     DiscussRequest,
     DiscussResponse,
+    LessonApplyRequest,
+    LessonApplyResponse,
+    LessonDraftResponse,
     RoundDecisionRequest,
     RoundDecisionResponse,
     SyncResponse,
 )
 from app.schemas.watch import ReviewWatchRead
-from app.services import analytics, keys_service, thread_sync, vcs, watch_service
+from app.services import (
+    analytics,
+    keys_service,
+    lessons_service,
+    settings_service,
+    thread_sync,
+    vcs,
+    watch_service,
+)
 from app.services.apply_service import apply_review, decide_round
-from app.services.discussion import discuss_threads
+from app.services.discussion import discuss_threads, prepare_discussion, stream_discussion
 from app.services.progress import bus
 from app.services.review_pipeline import PipelineError, create_running_review, schedule_ingest
+from app.services.skills_service import SkillError
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
@@ -141,6 +153,34 @@ async def discuss_review(
     )
 
 
+@router.post("/{review_id}/discuss/stream")
+async def discuss_review_stream(
+    review_id: int,
+    payload: DiscussRequest,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """Discussion over SSE: per-thread events as answers are written.
+
+    Validation errors are JSON before the stream opens; once it does, every thread ends in a
+    `thread_done` or `thread_error` event and a terminal `done`, and each completed exchange
+    is already persisted when its event is sent.
+    """
+    review = _owned_review(db, user.id, review_id)
+    try:
+        prepared = prepare_discussion(db, review, payload.threads)
+    except PipelineError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    async def generator():
+        async for event in stream_discussion(prepared):
+            event = dict(event)
+            name = event.pop("type")
+            yield f"event: {name}\ndata: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(generator(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
 @router.post("/{review_id}/apply", response_model=ApplyResponse)
 async def apply_to_github(
     review_id: int,
@@ -212,3 +252,63 @@ async def decide_round_state(
     except PipelineError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return RoundDecisionResponse(review=_detail(db, review), warnings=warnings)
+
+
+def _lesson_thread(db: Session, user_id: int, review_id: int, thread_id: int):
+    """Ownership first (a 404, never a 403), then the beta gate, then the thread."""
+    review = _owned_review(db, user_id, review_id)
+    if not settings_service.beta_enabled(db, user_id, lessons_service.LESSON_FLAG):
+        raise HTTPException(
+            status_code=422,
+            detail="This beta feature is turned off. Enable it in Settings, under Beta features.",
+        )
+    try:
+        return review, lessons_service.owned_thread(review, thread_id)
+    except lessons_service.LessonError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post(
+    "/{review_id}/threads/{thread_id}/lesson/draft", response_model=LessonDraftResponse
+)
+async def draft_lesson(
+    review_id: int,
+    thread_id: int,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+) -> LessonDraftResponse:
+    """Draft a reusable rule from the finding — editable, applied only on the apply endpoint."""
+    review, thread = _lesson_thread(db, user.id, review_id, thread_id)
+    try:
+        draft = await lessons_service.draft_lesson(db, review, thread)
+    except lessons_service.LessonError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return LessonDraftResponse(**draft)
+
+
+@router.post("/{review_id}/threads/{thread_id}/lesson", response_model=LessonApplyResponse)
+def apply_lesson(
+    review_id: int,
+    thread_id: int,
+    payload: LessonApplyRequest,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+) -> LessonApplyResponse:
+    """Write the reviewer-approved lesson into the chosen foundation and record attribution."""
+    review, thread = _lesson_thread(db, user.id, review_id, thread_id)
+    try:
+        lesson = lessons_service.apply_lesson(
+            db,
+            review,
+            thread,
+            foundation_id=payload.foundation_id,
+            title=payload.title,
+            body=payload.body,
+        )
+    except lessons_service.LessonError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except SkillError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return LessonApplyResponse(
+        path=lesson.path, foundation=lesson.foundation, lesson_id=lesson.id
+    )
