@@ -6,18 +6,33 @@ export interface MentionMenuProps {
   activeIndex: number;
   query: string;
   onPick: (ordinal: number) => void;
+  /** The composer measures the room in its scroll pane and picks the side. */
+  placement?: "above" | "below";
+  /** Pixels; capped by the room the composer measured. */
+  maxHeight?: number;
 }
 
 /**
- * The `#` typeahead. Rendered under the composer; the composer owns the caret/state, this only
- * lists what can be referenced and reports the pick.
+ * The `#` typeahead. Rendered by the composer directly under its textarea; the composer owns the
+ * caret/state and the placement, this only lists what can be referenced and reports the pick.
  */
-export function MentionMenu({ options, activeIndex, query, onPick }: MentionMenuProps) {
+export function MentionMenu({
+  options,
+  activeIndex,
+  query,
+  onPick,
+  placement = "below",
+  maxHeight = 224,
+}: MentionMenuProps) {
   return (
     <div
       role="listbox"
       aria-label="Referenced review threads"
-      className="absolute inset-x-2 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border border-borderStrong bg-surface p-1 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)]"
+      style={{ maxHeight }}
+      className={cn(
+        "absolute inset-x-0 z-20 overflow-y-auto rounded-lg border border-borderStrong bg-surface p-1 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)]",
+        placement === "above" ? "bottom-full mb-1" : "top-full mt-1",
+      )}
     >
       {options.length === 0 ? (
         <p className="px-2 py-1.5 text-[11px] text-inkMuted">

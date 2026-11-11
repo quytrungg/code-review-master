@@ -3,17 +3,22 @@ import type {
   AppSettings,
   ApplyResponse,
   AuthUser,
+  CachedPR,
   CodeReviewDetail,
   CodeReviewSummary,
   ConnectionTestResponse,
   CreateReviewAccepted,
   DiscussResponse,
   Foundation,
+  InboxFilters,
+  InboxSyncResponse,
   LLMKey,
   LLMKeyCreate,
   KeyTestResult,
   ModelCatalog,
+  QuickReviewEvent,
   ReviewVerdict,
+  ReviewWatch,
   RoundDecision,
   RoundDecisionResponse,
   SettingsUpdate,
@@ -168,6 +173,42 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ decision, summary: summary ?? null }),
     }),
+
+  listInbox: (filters: InboxFilters = {}) => {
+    const params = new URLSearchParams();
+    if (filters.status) params.set("status", filters.status);
+    if (filters.repo) params.set("repo", filters.repo);
+    if (filters.unread) params.set("unread", "true");
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<CachedPR[]>(`/inbox${suffix}`);
+  },
+
+  syncInbox: () => request<InboxSyncResponse>("/inbox/sync", { method: "POST" }),
+
+  quickReview: (cachedPrId: number, event: QuickReviewEvent, body?: string) =>
+    request<CachedPR>("/inbox/quick-review", {
+      method: "POST",
+      body: JSON.stringify({ cached_pr_id: cachedPrId, event, body: body ?? null }),
+    }),
+
+  polishComment: (text: string) =>
+    request<{ text: string }>("/inbox/polish", {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+
+  listWatches: () => request<ReviewWatch[]>("/watches"),
+
+  createWatch: (reviewId: number) =>
+    request<ReviewWatch>("/watches", { method: "POST", body: JSON.stringify({ review_id: reviewId }) }),
+
+  updateWatch: (watchId: number, enabled: boolean) =>
+    request<ReviewWatch>(`/watches/${watchId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  deleteWatch: (watchId: number) => request<void>(`/watches/${watchId}`, { method: "DELETE" }),
 
   getAnalytics: (days = 30) => request<AnalyticsResponse>(`/analytics?days=${days}`),
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy, Hourglass, MessageSquare, Send } from "lucide-react";
@@ -31,6 +31,19 @@ export interface CommentBoxProps {
   sending?: boolean;
   submitDisabledReason?: string | null;
   disabled?: boolean;
+}
+
+/**
+ * The nearest ancestor that clips the composer — the SplitPane discussion section. The picker is
+ * absolutely positioned, so this is also the box it has to fit inside.
+ */
+function scrollableAncestor(element: HTMLElement): HTMLElement | null {
+  let node = element.parentElement;
+  while (node) {
+    if (/(auto|scroll)/.test(window.getComputedStyle(node).overflowY)) return node;
+    node = node.parentElement;
+  }
+  return null;
 }
 
 function fallbackRound(): ThreadRound {
@@ -66,12 +79,19 @@ export function CommentBox({
   disabled = false,
 }: CommentBoxProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The token Esc dismissed, so the key-up that follows does not reopen it.
+  const dismissedRef = useRef<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [mention, setMention] = useState<{ start: number; query: string; index: number } | null>(
     null,
   );
+  const [menuLayout, setMenuLayout] = useState<{
+    placement: "above" | "below";
+    maxHeight: number;
+  }>({ placement: "below", maxHeight: 224 });
 
   // The badge keeps the review-wide ordinal: filtering must never renumber a thread.
   const displayOrdinal = thread.ordinal || index + 1;
@@ -92,10 +112,31 @@ export function CommentBox({
 
   function handleDraftChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
     const value = event.target.value;
+    dismissedRef.current = null;
     onDraftChange(value);
     const caret = event.target.selectionStart ?? value.length;
     const active = activeMention(value, caret);
     setMention(active ? { ...active, index: 0 } : null);
+  }
+
+  /**
+   * Re-read the token under the caret after a caret move that is not a change. Clicking elsewhere in
+   * the textarea or pressing Home/End must close the picker instead of leaving it armed at a stale
+   * offset, and the active row survives the key-up that follows ↑/↓.
+   */
+  function syncMentionToCaret() {
+    const element = textareaRef.current;
+    if (!element) return;
+    const caret = element.selectionStart ?? element.value.length;
+    const active = activeMention(element.value, caret);
+    setMention((current) => {
+      if (!active) return null;
+      if (dismissedRef.current === active.start) return null;
+      if (current && current.start === active.start && current.query === active.query) {
+        return current;
+      }
+      return { ...active, index: 0 };
+    });
   }
 
   function pickOrdinal(ordinal: number) {
@@ -115,6 +156,7 @@ export function CommentBox({
     if (!mention) return;
     if (event.key === "Escape") {
       event.preventDefault();
+      dismissedRef.current = mention.start;
       setMention(null);
       return;
     }
@@ -185,6 +227,45 @@ export function CommentBox({
     }
   }, [selected]);
 
+  // Anchor the picker to the textarea and keep it inside the pane that clips it: open upwards when
+  // the composer sits near the pane's bottom edge, and never grow taller than the room it has.
+  useLayoutEffect(() => {
+    if (!mention) return;
+    const textarea = textareaRef.current;
+    const menu = composerRef.current?.querySelector<HTMLElement>('[role="listbox"]');
+    if (!textarea || !menu) return;
+    const pane = scrollableAncestor(textarea);
+    const paneRect = pane?.getBoundingClientRect();
+    const paneTop = paneRect?.top ?? 0;
+    const paneBottom = paneRect?.bottom ?? window.innerHeight;
+    const rect = textarea.getBoundingClientRect();
+    const roomBelow = paneBottom - rect.bottom - 12;
+    const roomAbove = rect.top - paneTop - 12;
+    const placement = roomBelow >= 140 || roomBelow >= roomAbove ? "below" : "above";
+    const maxHeight = Math.max(96, Math.min(224, placement === "below" ? roomBelow : roomAbove));
+    setMenuLayout((current) =>
+      current.placement === placement && current.maxHeight === maxHeight
+        ? current
+        : { placement, maxHeight },
+    );
+  }, [mention?.start, mention?.query, mentionOptions.length]);
+
+  // The pane, not the page, has to move: nudge it by exactly the overflow once the menu has its
+  // final side and height.
+  useLayoutEffect(() => {
+    if (!mention) return;
+    const textarea = textareaRef.current;
+    const menu = composerRef.current?.querySelector<HTMLElement>('[role="listbox"]');
+    const pane = textarea ? scrollableAncestor(textarea) : null;
+    if (!pane || !menu) return;
+    const paneRect = pane.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const overflowBottom = menuRect.bottom + 8 - paneRect.bottom;
+    const overflowTop = paneRect.top + 8 - menuRect.top;
+    if (overflowBottom > 0) pane.scrollBy({ top: overflowBottom });
+    else if (overflowTop > 0) pane.scrollBy({ top: -overflowTop });
+  }, [menuLayout, mention?.start, mention?.query, mentionOptions.length]);
+
   return (
     <div
       ref={ref}
@@ -195,6 +276,8 @@ export function CommentBox({
         isGithub ? "border-l-accentStrong" : "border-l-accent",
         isGithub ? "border-borderStrong" : "border-accent/45",
         selected ? "ring-2 ring-accent/40" : "",
+        // A menu that opens downwards overlaps the next card; keep this card above its siblings.
+        mention ? "relative z-30" : "",
       )}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
@@ -264,31 +347,38 @@ export function CommentBox({
           );
         })}
 
-        <div className="relative space-y-2 pt-1">
-          <Textarea
-            ref={textareaRef}
-            rows={2}
-            value={draft}
-            disabled={disabled}
-            onFocus={onSelect}
-            onChange={handleDraftChange}
-            onKeyDown={handleKeyDown}
-            onBlur={() => window.setTimeout(() => setMention(null), 120)}
-            placeholder={
-              isGithub
-                ? "Ask the copilot: “Is this reviewer right about the race condition?” · # references another thread"
-                : "Ask the model, push back, or reference another thread with #"
-            }
-            className="min-h-[68px] text-[13px]"
-          />
-          {mention ? (
-            <MentionMenu
-              options={mentionOptions}
-              activeIndex={Math.min(mention.index, Math.max(mentionOptions.length - 1, 0))}
-              query={mention.query}
-              onPick={pickOrdinal}
+        <div className="space-y-2 pt-1">
+          <div ref={composerRef} className="relative">
+            <Textarea
+              ref={textareaRef}
+              rows={2}
+              value={draft}
+              disabled={disabled}
+              onFocus={onSelect}
+              onChange={handleDraftChange}
+              onKeyDown={handleKeyDown}
+              onKeyUp={syncMentionToCaret}
+              onClick={syncMentionToCaret}
+              onSelect={syncMentionToCaret}
+              onBlur={() => window.setTimeout(() => setMention(null), 120)}
+              placeholder={
+                isGithub
+                  ? "Ask the copilot: “Is this reviewer right about the race condition?” · # references another thread"
+                  : "Ask the model, push back, or reference another thread with #"
+              }
+              className="min-h-[68px] text-[13px]"
             />
-          ) : null}
+            {mention ? (
+              <MentionMenu
+                options={mentionOptions}
+                activeIndex={Math.min(mention.index, Math.max(mentionOptions.length - 1, 0))}
+                query={mention.query}
+                onPick={pickOrdinal}
+                placement={menuLayout.placement}
+                maxHeight={menuLayout.maxHeight}
+              />
+            ) : null}
+          </div>
           <div className="flex items-center justify-between gap-2">
             <span className="text-[11px] text-inkMuted">
               {submitDisabledReason ?? "Drafts stay local until you submit them."}

@@ -13,8 +13,8 @@ Ideas are ranked by **value ÷ effort**, not by how interesting they are to buil
 | # | Initiative | Why it matters | Effort | Schema |
 |---|------------|----------------|--------|--------|
 | 1 | Repository context for the model | Fewer false findings, grounded discussions | L | no |
-| 2 | Multi-pass review of large diffs | Removes the 60 000-char review ceiling | M–L | no |
-| 3 | Watch a PR and review new commits | Turns a one-shot review into a review loop | XL | yes |
+| 2 | ~~Multi-pass review of large diffs~~ | Shipped in phase 26 — see §2 for the deviations | M–L | no |
+| 3 | ~~Watch a PR and review new commits~~ | Shipped in phase 27 — see §3 for the deviations | XL | yes |
 | 4 | ~~LLM call ledger and quality analytics~~ | Shipped in phase 22 — see §4 for the deviations | M | yes |
 | 5 | Streaming replies, per-thread retry, cancel | The most visible UX wart in the product | L | no |
 
@@ -87,7 +87,16 @@ depends on a line outside the hunk and is correct only with context enabled.
 
 ---
 
-## 2. Multi-pass review for large diffs
+## 2. Multi-pass review for large diffs — shipped, phase 26
+
+> Built as `docs/plans/phase_26_plan.md`. Three deviations from the sketch below: there was no
+> "existing global finding cap" to apply, so `review_max_findings` (60) was introduced and applies
+> to single-pass reviews too; splitting is triggered by `diff_max_chars`, not by the part size, so a
+> 40 000-character diff is still one call and only a change that *would* have been truncated is
+> chunked; and the merge pass anchors against the full diff before deduping, since parts own
+> disjoint files and a per-line key is enough. Truncation now cuts on hunk boundaries rather than
+> mid-line. Verified end to end: a 130 876-character, 16-file diff produced 8 ingest calls plus one
+> verdict call, 16 anchored findings, and no truncation warning.
 
 **Problem.** A review is one model call over one diff, hard-capped at
 `diff_max_chars = 60_000` (`core/config.py:52`). Past that the diff is truncated and the review
@@ -140,7 +149,19 @@ model call.
 
 ---
 
-## 3. Watch a PR and review new commits (delta reviews)
+## 3. Watch a PR and review new commits (delta reviews) — shipped, phase 27
+
+> Built as `docs/plans/phase_27_plan.md`. Deviations from the sketch below: a watch is created
+> **from an existing review** (`POST /api/watches {review_id}`, which copies the model and
+> foundation) rather than from a dashboard form or an apply checkbox — one fewer form and one
+> explicit enable; the "parent" link is stored twice (`parent_review_id` for the UI,
+> `watch_id` on the review for idempotency, plus `UNIQUE(watch_id, commit_id)`, which the sketch
+> only implied); `last_seen_commit_id` advances when the delta review is **created**, not when it
+> succeeds, so one flaky model call cannot re-review the same commit on every tick; and the tick
+> runs its reviews inline (locally in the loop, on Vercel inside the cron request) instead of
+> spawning background tasks, because `asyncio.create_task` dies with the response. Verified end to
+> end: a moved mock head produced one linked review, one `compare(old…new)`, zero full-diff
+> fetches, and a second tick that did nothing.
 
 **Problem.** A review starts from a pasted URL and ends at `applied`, which is terminal — a second
 apply is a `409`. The review is pinned to the `commit_id` recorded at ingest. Reviewing the

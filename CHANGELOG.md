@@ -9,6 +9,156 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 31 — Inbox: authored and assigned PRs — 2026-11-11
+
+Plan: `docs/plans/phase_31_plan.md`. Migration `0016_inbox_involvement` adds `cached_prs.involvement`.
+
+### Added
+
+- **Authored and assigned pull requests in the inbox.** Discovery gains
+  `is:pr is:open author:{login}` and `is:pr is:open assignee:{login}`, deduped with the review
+  request and commenter queries.
+- **Involvement badge.** Each row carries `reviewer` / `assignee` / `author` (author wins over
+  assignee over reviewer); own PRs show **Your PR**, assignments **Assigned to you**, and the same
+  turn-taking state machine applies — a reply after your last action re-arms the row to
+  `needs_review` with an unread count, on your own PR meaning "your PR needs attention".
+
+### Changed
+
+- **Inbox rows link at review creation.** `create_running_review` stamps `linked_review_id` on the
+  cached row as soon as a review starts (manual or watch-triggered), so the card shows
+  **Open review** immediately instead of waiting for the next GitHub sync.
+
+---
+
+## Phase 29 — Inbox filter fixes — 2026-11-11
+
+Plan: `docs/plans/phase_29_plan.md`. No migration, no API change.
+
+### Changed
+
+- The inbox status filter defaults to **Needs review**.
+- The repository dropdown lists every repo in the cache (unfiltered read) instead of shrinking to
+  whatever the active filters leave visible.
+
+---
+
+## Phase 28 — PR Inbox & Review Queue — 2026-11-11
+
+Plan: `docs/plans/phase_28_plan.md` (the request arrived named "Phase 11"; that number was already
+shipped, so the work took the next free phase). Migration `0015_cached_prs` adds the per-account
+`cached_prs` table.
+
+### Added
+
+- **PR Inbox** (`/inbox`, navbar entry with an unread-replies badge). Aggregates every open GitHub
+  pull request where the user — or one of the user's teams — is requested for review, plus PRs the
+  user already commented on, through three targeted search queries (`review-requested`,
+  `team-review-requested`, `commenter`), deduped on the PR URL.
+- **Turn-taking detection.** Status comes from the user's latest submitted review (`approved`,
+  `request_changed`, `commented`) and reverts to `needs_review` — with `has_unread_replies` and a
+  count — when anyone else comments after the user's last action. `last_user_action_at` is GitHub
+  truth, so an approval posted from the GitHub UI moves the clock too.
+- **Local cache.** `POST /api/inbox/sync` rebuilds `cached_prs` and drops rows for PRs that closed
+  or no longer match; `GET /api/inbox` (filters: `status`, `repo`, `unread`) renders from the
+  cache with no API calls. Status refresh is best-effort per PR — one failure becomes a warning,
+  not a failed sync.
+- **Quick reviews from the inbox.** A right-hand slide-over posts Approve / Request changes /
+  Comment to GitHub (`POST /api/inbox/quick-review`), with a body required for the two non-approve
+  events, and an optional **Polish** button (`POST /api/inbox/polish`) that rewrites the draft
+  with the account's active model (ledger purpose `polish`).
+- **One-click AI review.** An inbox item either opens its linked in-app review or starts one with
+  the preferred (or first available) model; sync stamps `linked_review_id` from
+  `code_reviews.pr_url`.
+
+---
+
+## Phase 27 — Watch a pull request and review new commits — 2026-11-11
+
+Plan: `docs/plans/phase_27_plan.md`. Migration `0014_linked_review_watches` adds `review_watches`
+and three `code_reviews` columns; no API payload changed shape and no route moved.
+
+### Added
+
+- **Watched pull requests.** "Watch for new commits" in the review header (or
+  `POST /api/watches {review_id}`) reuses that review's model and foundation and stores the commit
+  it already covered as the delta base. One watch per PR per account; pressing it again resumes a
+  paused watch.
+- **Delta reviews.** A tick reads the PR head; when it moved, `vcs.compare(old…new)` is reviewed and
+  the result is a new review row with `parent_review_id`, `watch_id` and `trigger='watch'`. The
+  workspace shows "Continues review #N" and a **Delta review** badge, and the ingestion notes say
+  that only those commits were reviewed and the earlier threads were not re-validated.
+- **Two schedulers, one service.** Locally an asyncio loop ticks every `WATCH_INTERVAL_MINUTES`
+  (default 10, `0` disables); serverless starts no loop and `vercel.json` calls
+  `POST /api/watches/tick` on the same period, authenticated by `WATCH_TICK_SECRET`
+  (`503` when unset, `401` on a mismatch — it fails closed).
+- **Idempotency twice over.** A compare-and-set claim on `last_seen_commit_id` in the same
+  transaction as the review insert, plus `UNIQUE(watch_id, commit_id)`, so two racing ticks produce
+  one review.
+- **Watches panel** on the dashboard: head, last check, last error, a link to the latest review, and
+  Pause / Resume / Delete.
+
+### Changed
+
+- **The pipeline accepts a pre-fetched PR and diff.** `execute`/`run_ingest` take an optional
+  snapshot, so a watch reviews the delta it already fetched instead of re-reading the whole change
+  (proved by a live run: zero full-diff fetches during a delta review).
+- `code_reviews` rows carry `parent_review_id` and `trigger` in `GET /api/reviews`, and the detail
+  response carries `watch`.
+
+### Fixed
+
+- **Serverless never hid local Ollama from the model catalogue.** `app/api/routes/models.py`
+  compared the stored key's provider (`ollama_local`, database form) with the model-id prefix
+  (`ollama-local`), so the guard could not match and a deployed app offered a model it then refused
+  with `422`. It now compares through `llm_service.DB_PROVIDER`. This is the failure
+  `test_serverless_mode.py::test_local_ollama_is_hidden_and_rejected` had reported since phase 22,
+  and the suite was green again (276 passed, 0 failed) when this change landed.
+
+## Phase 26 — Large diffs are reviewed in parts instead of being truncated — 2026-11-11
+
+Plan: `docs/plans/phase_26_plan.md`. No schema change, no API change, no frontend change;
+`alembic_version` stays at head.
+
+### Added
+
+- **Multi-pass review past `DIFF_MAX_CHARS`.** `services/review_units.py` packs the reviewable files
+  into parts of at most `REVIEW_UNIT_CHARS`, one model call per part at most
+  `LLM_REVIEW_CONCURRENCY` in flight, each told `part i of n` and the only files it may report on.
+  A diff that already fits is still exactly one call.
+- **A merged opinion for multi-part reviews.** No part sees the whole change, so one extra
+  `verdict` call (`prompts.build_findings_verdict_prompt`, `verdict.evaluate_findings`) decides
+  `suggested_verdict` over the merged findings, reusing the phase 11 contract.
+- **`REVIEW_MAX_FINDINGS`** (default 60): several parts can each return a full set, so the merged
+  list is capped, highest severity first.
+- One progress row per finished part ("Reviewed 2 file(s) (part 3 of 8)"), on the existing bus.
+
+### Changed
+
+- **Prompt truncation happens on hunk boundaries.** A file that does not fit loses whole hunks and
+  says how many, instead of being sliced mid-line. The one exception is a first hunk larger than the
+  whole budget, which is cut and reported.
+- **Partial failure degrades instead of failing.** A part that errors leaves the review `draft` with
+  the findings that landed plus a note naming the part and its uncovered files; only every-part
+  failure fails the review.
+- Duplicate findings (same file and line) are merged before storage, keeping the longest body.
+
+## Phase 25 — The `#` thread picker stays inside the discussion pane — 2026-11-11
+
+Plan: `docs/plans/phase_25_plan.md`. No schema change, no API change; `alembic_version` stays at head.
+
+### Fixed
+
+- **The `#` thread picker was effectively invisible in the review workspace.** It was anchored to
+  the composer's whole block, so it opened below the card, past the bottom of the scrollable
+  discussion pane, and the next card painted over it — only the first row could be seen. It is now
+  anchored to the textarea, opens above the composer when that side has more room, caps its height
+  to the room the pane has, and nudges the pane so the whole list is visible.
+- **The picker kept a stale anchor.** Moving the caret out of the `#N` token left the menu open
+  against the original `#`, and a later pick inserted at that old position (`#3 #`). Caret moves now
+  re-read the token and close the menu, `Esc` stays closed while the caret sits in the same token,
+  and the highlighted row survives the key-up that follows ↑/↓.
+
 ## Phase 24 — Ollama Cloud is metered, so its calls are no longer estimated at zero — 2026-11-10
 
 Plan: `docs/plans/phase_24_plan.md`. No schema change; `alembic_version` stays at head. The stored

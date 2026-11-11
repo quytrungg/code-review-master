@@ -24,8 +24,10 @@ async def list_models(user: CurrentUser, db: Session = Depends(get_db)) -> Model
 
     for key in keys:
         note = key.label or None
-        if config.serverless and key.provider == llm_service.OLLAMA_LOCAL:
-            # A deployed function cannot reach the operator's local daemon; hide, don't offer it.
+        # `key.provider` is the *database* form (`ollama_local`), not the model-id prefix
+        # (`ollama-local`) — comparing the two silently never matches.
+        if config.serverless and key.provider == llm_service.DB_PROVIDER[llm_service.OLLAMA_LOCAL]:
+            # A deployed function cannot reach the operator's local daemon: hide, don't offer it.
             continue
         if key.provider == "claude" and key.api_key:
             for entry in await llm_service.list_claude_models(

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { NewReviewPanel } from "@/components/NewReviewPanel";
+import { WatchesPanel } from "@/components/WatchesPanel";
 import { api, ApiError } from "@/services/api";
 import {
   compactNumber,
@@ -14,7 +15,7 @@ import {
   formatUsd,
   relativeTime,
 } from "@/lib/utils";
-import type { AnalyticsResponse, BudgetStatus, CodeReviewSummary } from "@/types";
+import type { AnalyticsResponse, BudgetStatus, CodeReviewSummary, ReviewWatch } from "@/types";
 
 /** The one line the caps breach, in the order a reader cares about it. */
 function budgetWarnings(budget: BudgetStatus): string[] {
@@ -81,6 +82,8 @@ const statusLabel = (status: CodeReviewSummary["status"]) =>
 export function DashboardPage() {
   const [reviews, setReviews] = useState<CodeReviewSummary[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
+  const [watches, setWatches] = useState<ReviewWatch[]>([]);
+  const [watchBusyId, setWatchBusyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -88,9 +91,14 @@ export function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [list, usage] = await Promise.all([api.listReviews(), api.getAnalytics(30)]);
+      const [list, usage, watched] = await Promise.all([
+        api.listReviews(),
+        api.getAnalytics(30),
+        api.listWatches(),
+      ]);
       setReviews(list);
       setAnalytics(usage);
+      setWatches(watched);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to load reviews");
     } finally {
@@ -101,6 +109,32 @@ export function DashboardPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const toggleWatch = async (watch: ReviewWatch, enabled: boolean) => {
+    setWatchBusyId(watch.id);
+    setError(null);
+    try {
+      const updated = await api.updateWatch(watch.id, enabled);
+      setWatches((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not update the watch.");
+    } finally {
+      setWatchBusyId(null);
+    }
+  };
+
+  const deleteWatch = async (watch: ReviewWatch) => {
+    setWatchBusyId(watch.id);
+    setError(null);
+    try {
+      await api.deleteWatch(watch.id);
+      setWatches((current) => current.filter((row) => row.id !== watch.id));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not delete the watch.");
+    } finally {
+      setWatchBusyId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -139,6 +173,13 @@ export function DashboardPage() {
           <BudgetAlert budget={analytics.budget} />
         </div>
       ) : null}
+
+      <WatchesPanel
+        watches={watches}
+        busyId={watchBusyId}
+        onToggle={(watch, enabled) => void toggleWatch(watch, enabled)}
+        onDelete={(watch) => void deleteWatch(watch)}
+      />
 
       <Card>
         <CardHeader
@@ -189,6 +230,15 @@ export function DashboardPage() {
                             <span className="ml-2 text-xs text-inkMuted">#{review.pr_number}</span>
                           ) : null}
                         </Link>
+                        {review.parent_review_id ? (
+                          <Link
+                            to={`/reviews/${review.parent_review_id}`}
+                            className="ml-2 text-[11px] text-accent transition-colors hover:text-accentStrong"
+                            title="A watch started this review for the commits added since that one."
+                          >
+                            Continues #{review.parent_review_id}
+                          </Link>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 text-inkMuted">{review.repo_full_name ?? "—"}</td>
                       <td className="px-4 py-3 font-mono text-xs text-inkMuted">

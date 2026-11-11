@@ -50,7 +50,23 @@ class Settings(BaseSettings):
     # Budgets. The skill library is far larger than a prompt, so it is sampled by relevance.
     skills_max_chars: int = 80_000
     diff_max_chars: int = 60_000
+    # Past `diff_max_chars` the diff is reviewed in parts instead of being truncated: each part
+    # holds whole files up to this many rendered characters, at most `llm_review_concurrency` in
+    # flight. A single file larger than one part gets a part of its own.
+    review_unit_chars: int = 25_000
+    llm_review_concurrency: int = 3
+    # Upper bound on findings stored for one review, highest severity first: several parts can each
+    # return a full set, and a review nobody can read is not a better review.
+    review_max_findings: int = 60
     llm_max_tokens: int = 4096
+
+    # Watches. Locally/Docker an asyncio loop checks every `watch_interval_minutes` (0 disables it);
+    # serverless starts no loop and uses POST /api/watches/tick, authenticated by `watch_tick_secret`
+    # (Vercel Cron sends it as the bearer token). The per-tick caps keep one tick inside a request.
+    watch_interval_minutes: int = 10
+    watch_tick_secret: str | None = None
+    watch_max_checks_per_tick: int = 20
+    watch_max_reviews_per_tick: int = 2
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -81,7 +81,32 @@ async def evaluate(db: Session, review: CodeReview) -> VerdictOutcome | None:
     threads = list(review.threads)
     if not threads:
         return None
+    return await _ask(
+        db,
+        review,
+        paths=[thread.file_path for thread in threads],
+        user_prompt=prompts.build_verdict_prompt(threads),
+    )
 
+
+async def evaluate_findings(db: Session, review: CodeReview, findings) -> VerdictOutcome | None:
+    """One model call over a multi-part review's merged findings (anchored, pre-persistence).
+
+    An empty list is still worth asking about: a large change where no part found anything should
+    get a verdict, and "no findings" is exactly what the contract's `APPROVE` is for.
+    """
+    return await _ask(
+        db,
+        review,
+        paths=[finding.path for finding in findings],
+        user_prompt=prompts.build_findings_verdict_prompt(findings),
+    )
+
+
+async def _ask(
+    db: Session, review: CodeReview, *, paths: list[str], user_prompt: str
+) -> VerdictOutcome | None:
+    """Shared body: resolve the model and its credentials, then one JSON-shaped call."""
     try:
         model = llm_service.parse_model_id(review.model_used or "")
     except LLMError as exc:
@@ -94,13 +119,10 @@ async def evaluate(db: Session, review: CodeReview) -> VerdictOutcome | None:
         logger.info("Verdict re-evaluation skipped: %s", exc.detail)
         return None
 
-    bundle = skill_loader.load_bundle(
-        language_hints([thread.file_path for thread in threads]), root=_foundation_root(review)
-    )
+    bundle = skill_loader.load_bundle(language_hints(paths), root=_foundation_root(review))
     system_prompt = (
         prompts.build_discussion_system_prompt(bundle.text) + "\n\n" + prompts.VERDICT_CONTRACT
     )
-    user_prompt = prompts.build_verdict_prompt(threads)
 
     try:
         outcome = await llm_service.generate(

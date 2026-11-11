@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -15,6 +16,7 @@ from app.core.config import get_settings
 from app.core.crypto import CredentialError
 from app.db.encryption import log_startup_report
 from app.db.init_db import fail_orphaned_reviews, init_db
+from app.services import watch_service
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 # In-process Alembic runs reset the root logger to WARN (alembic.ini); keep our own namespaces
@@ -51,12 +53,21 @@ async def lifespan(_: FastAPI):
     if settings.serverless:
         # A release step runs migrations, and another instance may own a `running` review, so
         # startup must neither upgrade the schema nor sweep rows. Reads mark stale ones instead.
+        # The watch loop is replaced by POST /api/watches/tick on a schedule.
         logger.info("Serverless mode: startup migrations and the orphan sweep are disabled")
     else:
         init_db()
         fail_orphaned_reviews()
+        watch_service.start_loop()
     log_startup_report()
-    yield
+    try:
+        yield
+    finally:
+        # Await the cancellation so shutdown does not leave a pending task behind.
+        loop = watch_service.stop_loop()
+        if loop is not None:
+            with suppress(asyncio.CancelledError):
+                await loop
 
 
 def create_app() -> FastAPI:

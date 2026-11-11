@@ -36,8 +36,9 @@ phase; fold a rule back here (and delete the copy) once it becomes general.
 ## 3. What it is
 
 Local-first interactive PR review for one or more accounts: GitHub PR or GitLab MR → diff + skill
-library → anchored findings → discussion → one published review. Brief: `MASTER_PROMPT.md`; design
-record: `docs/plans/`.
+library → anchored findings → discussion → one published review. A review can be **watched**: each
+new push is reviewed as a delta that links back to the review it continues. Brief:
+`MASTER_PROMPT.md`; design record: `docs/plans/`.
 
 Python 3.12 · FastAPI · SQLAlchemy 2.0 · Alembic · httpx · psycopg 3 · React 18 + TypeScript ·
 Vite 5 · Tailwind. PostgreSQL by default, SQLite for tests; the VCS is GitHub or GitLab and models
@@ -46,10 +47,12 @@ are Claude, OpenAI/Codex, Ollama Cloud or a local daemon.
 ## 4. Layout
 
 ```
-backend/app/  routes (auth, settings, keys, reviews, models, skills) · core (config, crypto)
-              db (session, init_db, types, encryption) · models (+ ReviewEvent) · schemas · services
-backend/      alembic 0001…0012 · scripts (db copy, key generation/rotation) · tests (191, temp SQLite)
-              rules/ (§2)
+backend/app/  routes (auth, settings, keys, reviews, watches, models, skills, analytics)
+              core (config, crypto) · db (session, init_db, types, encryption)
+              models (+ ReviewEvent, LLMCall, ReviewWatch) · schemas
+              services (roster in `backend/rules/conventions.md`)
+backend/      alembic versions/ (head = newest revision) · scripts (db copy, cost backfill, keys)
+              tests (pytest, temp SQLite) · rules/ (§2)
 frontend/src/ pages · components (+ ui/) · context · services/api.ts · types · hooks · lib
 code-review/  bundled default skill library      code-review-foundations/  uploads (gitignored)
 docs/plans/   phase plans (§1); INITIATIVES.md at the root is the ranked backlog
@@ -85,9 +88,11 @@ the workspace layout and copy style are all in `frontend/rules/conventions.md`. 
 
 - pytest + `TestClient`; `conftest.py` sets a temp SQLite `DATABASE_URL` and temp skill dirs before
   importing the app, and the lifespan runs real migrations — schema drift shows up here.
-- Stub at the service boundary, never the network. One signed-in client lives in `tests/fixtures.py`.
+- Stub at the service boundary, never the network. The signed-in session client and its per-test
+  reset live in `tests/conftest.py`; `tests/fixtures.py` holds provisioning and result helpers.
 - Cover HTTP contract, anchoring, persistence, guards, references, sync idempotency, round
-  decisions, delta apply. Gate: `cd backend && pytest -q`.
+  decisions, delta apply, multi-pass merge, and watch ticks (no-op, claim, delta, failure).
+  Gate: `cd backend && pytest -q`.
 
 ## 9. Run locally
 
@@ -137,4 +142,11 @@ no destructive command against the operator's data.
 - Keep SSE headers (`Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`).
 - Serverless: `asyncio.create_task` dies with the response, so ingest is a background task; progress
   must stay in `review_events`; never run `fail_orphaned_reviews()` where instances share a DB.
-- This directory is not a git repository — no history or diffs; don't rely on `git` or init one.
+- **Two names for one provider.** A stored credential has `key.provider == "ollama_local"` (database
+  form); a model id is `"ollama-local:<tag>"` (hyphen). Comparing the two silently never matches —
+  that is how "hide local Ollama on serverless" quietly stopped hiding it. Use
+  `llm_service.DB_PROVIDER[...]` when reading a key row, the prefix when reading a model id.
+- A watch advances `last_seen_commit_id` when its delta review is **created**, not when it succeeds;
+  a rejected duplicate advances it too, so a watch can never park on one commit forever.
+- This is a git repository (`main` tracks `origin/main`): read `git status`/`git log` before
+  assuming history, and commit only when asked.

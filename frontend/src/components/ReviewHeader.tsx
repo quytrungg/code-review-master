@@ -1,6 +1,7 @@
-import { Activity, ArrowLeft, ExternalLink, GitBranch, GitCommitHorizontal, Cpu } from "lucide-react";
+import { Activity, ArrowLeft, CornerDownRight, ExternalLink, GitBranch, GitCommitHorizontal, Cpu } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/Badge";
+import { WatchToggle } from "@/components/WatchToggle";
 import { compactNumber, estimatedCost, formatDuration, relativeTime, shortSha } from "@/lib/utils";
 import type { CodeReviewDetail } from "@/types";
 
@@ -59,6 +60,16 @@ export function ReviewHeader({ review }: { review: CodeReviewDetail }) {
               {review.vcs === "gitlab" ? "GitLab" : "GitHub"} · {review.repo_full_name ?? "unknown repo"}
               {review.pr_number ? `#${review.pr_number}` : ""}
             </span>
+            {review.parent_review_id ? (
+              <Link
+                to={`/reviews/${review.parent_review_id}`}
+                className="inline-flex items-center gap-1 text-accent transition-colors hover:text-accentStrong"
+                title="This review covers only the commits added after that review."
+              >
+                <CornerDownRight className="h-3.5 w-3.5" />
+                Continues review #{review.parent_review_id}
+              </Link>
+            ) : null}
             {review.commit_id ? (
               <span className="inline-flex items-center gap-1 font-mono">
                 <GitCommitHorizontal className="h-3.5 w-3.5" />
@@ -93,6 +104,7 @@ export function ReviewHeader({ review }: { review: CodeReviewDetail }) {
               {review.confidence_percentage !== null ? ` · ${review.confidence_percentage}%` : ""}
             </Badge>
           ) : null}
+          {review.trigger === "watch" ? <Badge tone="neutral">Delta review</Badge> : null}
           {review.verdict ? <Badge tone="neutral">{review.verdict}</Badge> : null}
           {review.github_review_url ? (
             <a href={review.github_review_url} target="_blank" rel="noreferrer">
@@ -104,6 +116,10 @@ export function ReviewHeader({ review }: { review: CodeReviewDetail }) {
           ) : null}
           <Badge tone={statusTone(review.status)}>{statusLabel(review.status)}</Badge>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-start justify-end gap-2">
+        <WatchToggle review={review} />
       </div>
     </header>
   );

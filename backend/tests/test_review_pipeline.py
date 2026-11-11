@@ -279,7 +279,7 @@ def test_unexpected_ingest_error_fails_the_review(client, monkeypatch):
         db.commit()
         review_id = review.id
 
-    async def explode(db_session, review_row):
+    async def explode(db_session, review_row, **_snapshot):
         raise RuntimeError('column "author" of relation "thread_messages" does not exist')
 
     monkeypatch.setattr(review_pipeline, "execute", explode)

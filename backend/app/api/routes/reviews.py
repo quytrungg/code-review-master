@@ -24,7 +24,8 @@ from app.schemas.review import (
     RoundDecisionResponse,
     SyncResponse,
 )
-from app.services import analytics, keys_service, thread_sync, vcs
+from app.schemas.watch import ReviewWatchRead
+from app.services import analytics, keys_service, thread_sync, vcs, watch_service
 from app.services.apply_service import apply_review, decide_round
 from app.services.discussion import discuss_threads
 from app.services.progress import bus
@@ -40,9 +41,11 @@ SSE_HEADERS = {
 
 
 def _detail(db: Session, review: CodeReview) -> CodeReviewDetail:
-    """One review plus its call usage, so the header line is fresh after every action."""
+    """One review plus its call usage and its watch, so the header line is fresh after every action."""
     detail = CodeReviewDetail.from_row(review)
     detail.usage = analytics.review_usage(db, review.id)
+    watch = watch_service.watch_for(db, review.user_id, review.pr_url)
+    detail.watch = ReviewWatchRead.from_row(watch) if watch is not None else None
     return detail
 
 

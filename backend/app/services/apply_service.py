@@ -47,6 +47,7 @@ __all__ = [
     "collate_comments",
     "decide_round",
     "pending_round_count",
+    "recompute_status",
     "revalidate_anchors",
 ]
 
@@ -114,6 +115,71 @@ def pending_round_count(review: CodeReview) -> int:
     """Everything the apply button has work for: unposted findings plus ready replies."""
     threads = list(review.threads)
     return len(_initial_threads(threads)) + len(_reply_rounds(threads))
+
+
+def _has_published_content(review: CodeReview) -> bool:
+    """True once round 1 of any AI finding is published or the review has a GitHub review URL."""
+    if review.github_review_url:
+        return True
+    for thread in review.threads:
+        if thread.origin != ThreadOrigin.AI_GENERATED:
+            continue
+        first = thread.round(1)
+        if first is not None and first.status == RoundStatus.PUBLISHED:
+            return True
+    return False
+
+
+def _has_approval_only(review: CodeReview) -> bool:
+    """True when the review has a github_review_url but no AI findings were published as comments."""
+    if not review.github_review_url:
+        return False
+    for thread in review.threads:
+        if thread.origin != ThreadOrigin.AI_GENERATED:
+            continue
+        first = thread.round(1)
+        if first is not None and first.status == RoundStatus.PUBLISHED:
+            return False
+    return True
+
+
+def _has_open_reply_round(review: CodeReview) -> bool:
+    """True when any thread has a drafting round beyond round 1 (active discussion)."""
+    for thread in review.threads:
+        for item in thread.rounds:
+            if item.round_number > 1 and item.status == RoundStatus.DRAFTING:
+                return True
+    return False
+
+
+def recompute_status(review: CodeReview) -> str:
+    """Derive the review-level status from the current thread/round state.
+
+    A review is in discussion once the reviewer has accepted at least one finding, opened a
+    reply round, or has an open drafting round beyond round 1, even if nothing is published
+    yet. It is applied once its findings (or an approval with no inline comments) were published
+    to GitHub, even if later discussion rounds are still open.
+    """
+    if pending_round_count(review) > 0:
+        if review.github_review_url or _has_published_content(review):
+            return ReviewStatus.IN_DISCUSSION
+        return ReviewStatus.DRAFT
+    if _has_published_content(review) or _has_approval_only(review):
+        return ReviewStatus.APPLIED
+    if _has_accepted_finding(review) or _has_open_reply_round(review):
+        return ReviewStatus.IN_DISCUSSION
+    return ReviewStatus.DRAFT
+
+
+def _has_accepted_finding(review: CodeReview) -> bool:
+    """True when an AI round 1 was accepted (pending_apply) but not yet published."""
+    for thread in review.threads:
+        if thread.origin != ThreadOrigin.AI_GENERATED:
+            continue
+        first = thread.round(1)
+        if first is not None and first.status == RoundStatus.PENDING_APPLY:
+            return True
+    return False
 
 
 def collate_comments(review: CodeReview, threads: list[ReviewThread]) -> tuple[list[dict], list[str]]:
@@ -344,6 +410,7 @@ async def decide_round(
             # Pushing back a finding withdraws it: no comment, and the verdict prompt knows.
             thread.dropped = True
 
+    review.status = recompute_status(review)
     db.commit()
     db.refresh(review)
     return review, warnings
@@ -492,10 +559,12 @@ async def apply_review(
         thread.thread_status = ThreadStatus.APPLIED
         replies_posted += 1
 
-    review.status = ReviewStatus.APPLIED
+    review.status = recompute_status(review)
     review.verdict = payload.event
     if review_url:
         review.github_review_url = review_url
+    # Recompute again after setting the URL, so an approval with no inline comments still lands applied.
+    review.status = recompute_status(review)
     db.commit()
     db.refresh(review)
 

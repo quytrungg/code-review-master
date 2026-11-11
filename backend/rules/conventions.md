@@ -11,9 +11,13 @@ keys in `providers-and-keys.md`, data safety in `database.md`, PII in `privacy.m
 
 `vcs` (fetch/publish dispatch by host) · `github_service` · `gitlab_service` · `keys_service` ·
 `diff_parser` · `skill_loader` · `skills_service` · `prompts` · `llm_service` · `review_pipeline` ·
-`thread_sync` · `discussion` · `references` (`#N`) · `summarise` · `apply_service` · `progress` ·
+`review_units` (packs a large diff into per-file parts) · `watch_service` (watches, ticks,
+delta reviews) · `thread_sync` · `discussion` ·
+`references` (`#N`) · `summarise` · `verdict` · `apply_service` · `progress` ·
 `auth_service` · `secrets`, `settings_service` · `ledger` (one `llm_calls` row per call, own
-session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line).
+session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line) ·
+`github_inbox_service` (PR inbox: search-based discovery, turn-taking detection, quick reviews,
+comment polish).
 
 ## Routes and errors
 
@@ -27,7 +31,10 @@ session, never raises) · `analytics` (the `/api/analytics` aggregates and a rev
   schema in `app/schemas/` and build it with a `from_row`-style classmethod.
 - **Every new route is owned.** Non-auth routes are mounted with `Depends(get_current_user)` in
   `app/api/router.py` and take `user: CurrentUser`; pass `user.id` into the service and filter by it.
-  Another account's row is a `404`. Public routes belong only to `/api/auth/*` and `/api/health`.
+  Another account's row is a `404`. Public routes belong only to `/api/auth/*`, `/api/health` and
+  `POST /api/watches/tick` — the last because a cron job cannot hold a session cookie: it
+  authenticates with `WATCH_TICK_SECRET` (`hmac.compare_digest`, `503` when the secret is unset) and
+  must never be moved behind or in front of the session dependency by accident.
 - **A new service module** is added to the roster above in the same change.
 - **Serverless skills are read-only** — `skills_service.require_writable()` raises
   `SkillError(..., 403)`, `GET /api/skills` reports `uploads_enabled: false`, and the UI hides write

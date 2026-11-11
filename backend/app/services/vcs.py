@@ -113,6 +113,22 @@ async def fetch_comments(key: VersionControlKey, ref: PullRef) -> list[dict]:
         raise VCSError(exc.message, exc.status_code or 502) from exc
 
 
+async def compare(key: VersionControlKey, ref: PullRef, from_sha: str, to_sha: str) -> str:
+    """Unified diff between two commits of a change request — a watch's delta."""
+    base = api_base(key, ref)
+    try:
+        if ref.vcs == VCS_GITHUB:
+            owner, _, repo = ref.project.partition("/")
+            return await github_service.compare(
+                key.token, owner, repo, from_sha, to_sha, base_url=base
+            )
+        return await gitlab_service.compare(key.token, base, ref.project, from_sha, to_sha)
+    except GitHubError as exc:
+        raise VCSError(exc.message, exc.status_code or 502) from exc
+    except GitLabError as exc:
+        raise VCSError(exc.message, exc.status_code or 502) from exc
+
+
 async def post_reply(
     key: VersionControlKey, ref: PullRef, comment_id: int, body: str
 ) -> dict:

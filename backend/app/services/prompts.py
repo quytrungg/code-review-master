@@ -2,7 +2,57 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from app.services.diff_parser import FileDiff
+
+# Marker inserted where a file lost whole hunks to the budget, so the model is told what is missing
+# rather than inferring that the file ends there.
+OMITTED_HUNKS_MARKER = "[… {count} further hunk(s) of this file omitted …]"
+
+
+@dataclass
+class UserPrompt:
+    """One built prompt plus what the budget had to drop to build it."""
+
+    text: str
+    truncated: bool = False
+    # "path (last N hunk(s))" per file that did not fit whole.
+    omitted: list[str] = field(default_factory=list)
+
+
+def render_file_block(item: FileDiff, max_chars: int | None = None) -> tuple[str, int]:
+    """`## File:` heading plus its numbered hunks, cut on hunk boundaries.
+
+    Returns `(block, dropped_hunks)`. `max_chars` bounds the block; when it does not fit, whole
+    hunks are dropped from the end — a half-rendered hunk would show the model line numbers for
+    code it cannot see. The one exception is a first hunk that alone overflows the budget: nothing
+    else could be shown either, so it is cut (as the old single-call path did) and reported.
+    """
+    head = f"## File: {item.path}  (+{item.added}/-{item.removed})\n"
+    rendered: list[str] = []
+    used = len(head)
+    dropped = 0
+    for index, hunk in enumerate(item.hunks):
+        text = hunk.render_numbered()
+        if max_chars is None or used + len(text) + 1 <= max_chars:
+            rendered.append(text)
+            used += len(text) + 1
+            continue
+        room = max_chars - used
+        if not rendered and room > 500:
+            rendered.append(text[:room] + "\n[… hunk truncated here …]")
+        dropped = len(item.hunks) - index
+        break
+    if dropped:
+        rendered.append(OMITTED_HUNKS_MARKER.format(count=dropped))
+    return head + "\n".join(rendered) + "\n", dropped
+
+
+def file_block_size(item: FileDiff) -> int:
+    """Rendered size of a file's block with no budget applied — what `plan_units` packs."""
+    return len(render_file_block(item)[0])
+
 
 OUTPUT_CONTRACT = """
 # Output contract
@@ -62,8 +112,15 @@ def build_user_prompt(
     pr,  # pull_request.PullRequestInfo (kept loose to avoid a circular import)
     files: list[FileDiff],
     max_chars: int,
-) -> tuple[str, bool]:
-    """Numbered diff with the change-request header. Returns (prompt, was_truncated)."""
+    *,
+    part: int | None = None,
+    total: int | None = None,
+) -> UserPrompt:
+    """Numbered diff with the change-request header, bounded by `max_chars`.
+
+    `part`/`total` add the multi-pass framing: a part is told which files it owns and that other
+    parts cover the rest, so it does not speculate about code it was not given.
+    """
     separator = "#" if getattr(pr, "vcs", "github") == "github" else "!"
     header = [
         f"# Pull request {pr.project}{separator}{pr.number}: {pr.title}",
@@ -71,6 +128,8 @@ def build_user_prompt(
         f"- Author: {pr.author}",
         f"- Changed files: {len(files)} reviewable, +{sum(f.added for f in files)}/-{sum(f.removed for f in files)}",
     ]
+    if part and total and total > 1:
+        header.insert(3, f"- This prompt covers part {part} of {total} of the change")
     if pr.body:
         body = pr.body.strip()
         if len(body) > 1500:
@@ -79,20 +138,27 @@ def build_user_prompt(
     header.append("")
     header.append("# Diff (left column = RIGHT-side line number; use only these numbers)")
     header.append("")
+    if part and total and total > 1:
+        names = ", ".join(f"`{item.path}`" for item in files)
+        header.append(
+            f"NOTE: this is part {part} of {total} of a large pull request, split by file. Report "
+            f"findings only in these files: {names}. Do not report on, or speculate about, files "
+            "that are not shown here; other parts cover them."
+        )
+        header.append("")
 
     chunks: list[str] = []
+    omitted: list[str] = []
     used = 0
     truncated = False
     for item in files:
-        block = f"## File: {item.path}  (+{item.added}/-{item.removed})\n{item.render_numbered()}\n"
-        if used + len(block) > max_chars:
-            truncated = True
-            remaining = max_chars - used
-            if remaining > 2000:
-                chunks.append(block[:remaining] + "\n[… diff truncated here …]")
-            break
+        block, dropped_hunks = render_file_block(item, max_chars - used)
         chunks.append(block)
         used += len(block)
+        if dropped_hunks:
+            truncated = True
+            omitted.append(f"{item.path} (last {dropped_hunks} hunk(s))")
+            break
 
     if truncated:
         header.append(
@@ -101,7 +167,7 @@ def build_user_prompt(
         )
         header.append("")
 
-    return "\n".join(header) + "\n".join(chunks), truncated
+    return UserPrompt(text="\n".join(header) + "\n".join(chunks), truncated=truncated, omitted=omitted)
 
 
 DISCUSSION_CONTRACT = """
@@ -226,6 +292,25 @@ def build_verdict_prompt(threads) -> str:
 
     if len(threads) > MAX_VERDICT_THREADS:
         parts.append(f"({len(threads) - MAX_VERDICT_THREADS} further thread(s) omitted.)")
+        parts.append("")
+    parts.append(VERDICT_CONTRACT)
+    return "\n".join(parts)
+
+
+def build_findings_verdict_prompt(findings) -> str:
+    """The merged findings of a multi-part review, for one verdict decision.
+
+    Used when the review was split: each part returns its own opinion about the slice it saw, and
+    none of them saw the whole change. This pass is the one that sees every finding at once.
+    """
+    parts = [f"# Review state — {len(findings)} finding(s)", ""]
+    for ordinal, finding in enumerate(findings[:MAX_VERDICT_THREADS], start=1):
+        parts.append(f"## #{ordinal} `{finding.path}:{finding.line_number}`")
+        parts.append(f"Finding: {_verdict_excerpt(finding.comment)}")
+        parts.append("")
+
+    if len(findings) > MAX_VERDICT_THREADS:
+        parts.append(f"({len(findings) - MAX_VERDICT_THREADS} further finding(s) omitted.)")
         parts.append("")
     parts.append(VERDICT_CONTRACT)
     return "\n".join(parts)

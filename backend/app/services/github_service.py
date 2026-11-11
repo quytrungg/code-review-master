@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import urllib.parse
 
 import httpx
 
@@ -28,12 +29,16 @@ __all__ = [
     "GitHubError",
     "PullRequestInfo",
     "fetch_diff",
+    "fetch_issue_comments",
     "fetch_pr",
+    "fetch_pull_reviews",
     "fetch_review_comments",
     "fetch_review_id_comments",
+    "fetch_teams",
     "parse_pr_url",
     "post_reply",
     "post_review",
+    "search_open_prs",
     "verify_token",
 ]
 
@@ -107,6 +112,85 @@ async def _get(
     return response
 
 
+SEARCH_PAGE_SIZE = 100
+MAX_SEARCH_PAGES = 3
+
+
+async def search_open_prs(
+    token: str, query: str, base_url: str | None = None
+) -> list[dict]:
+    """Open PRs matching one GitHub search query (`is:pr is:open` qualifiers included).
+
+    The search API paginates to 1000 results, but an inbox is a triage surface, not an archive:
+    three pages (300 items) is deliberately the cap.
+    """
+    items: list[dict] = []
+    for page in range(1, MAX_SEARCH_PAGES + 1):
+        path = (
+            "/search/issues"
+            f"?q={urllib.parse.quote(query, safe='')}"
+            f"&per_page={SEARCH_PAGE_SIZE}&page={page}"
+        )
+        response = await _get(token, path, base_url=base_url)
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise GitHubError("GitHub returned a malformed search response.") from exc
+        batch = [item for item in (body.get("items") or []) if isinstance(item, dict)]
+        items.extend(batch)
+        if len(batch) < SEARCH_PAGE_SIZE:
+            break
+    return items
+
+
+async def fetch_teams(token: str, base_url: str | None = None) -> list[dict]:
+    """The teams the authenticated user belongs to: `[{name, slug, organization: {login}}]`."""
+    teams: list[dict] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        response = await _get(
+            token, f"/user/teams?per_page={COMMENTS_PAGE_SIZE}&page={page}", base_url=base_url
+        )
+        batch = _comment_list(response)
+        teams.extend(batch)
+        if len(batch) < COMMENTS_PAGE_SIZE:
+            break
+    return teams
+
+
+async def fetch_pull_reviews(
+    token: str, repo_full_name: str, number: int, base_url: str | None = None
+) -> list[dict]:
+    """Every submitted review on the pull request, all pages."""
+    reviews: list[dict] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        path = (
+            f"/repos/{repo_full_name}/pulls/{number}/reviews"
+            f"?per_page={COMMENTS_PAGE_SIZE}&page={page}"
+        )
+        batch = _comment_list(await _get(token, path, base_url=base_url))
+        reviews.extend(batch)
+        if len(batch) < COMMENTS_PAGE_SIZE:
+            break
+    return reviews
+
+
+async def fetch_issue_comments(
+    token: str, repo_full_name: str, number: int, base_url: str | None = None
+) -> list[dict]:
+    """Top-level PR conversation comments (the issue side of the timeline), all pages."""
+    comments: list[dict] = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        path = (
+            f"/repos/{repo_full_name}/issues/{number}/comments"
+            f"?per_page={COMMENTS_PAGE_SIZE}&page={page}"
+        )
+        batch = _comment_list(await _get(token, path, base_url=base_url))
+        comments.extend(batch)
+        if len(batch) < COMMENTS_PAGE_SIZE:
+            break
+    return comments
+
+
 async def fetch_pr(
     token: str, owner: str, repo: str, number: int, base_url: str | None = None
 ) -> PullRequestInfo:
@@ -149,6 +233,38 @@ async def fetch_diff(
     text = response.text
     if not text.strip():
         raise GitHubError("GitHub returned an empty diff for this pull request.", 422)
+    return text
+
+
+async def compare(
+    token: str,
+    owner: str,
+    repo: str,
+    base_sha: str,
+    head_sha: str,
+    base_url: str | None = None,
+) -> str:
+    """Unified diff between two commits — the delta a watched pull request has gained."""
+    try:
+        response = await _get(
+            token,
+            f"/repos/{owner}/{repo}/compare/{base_sha}...{head_sha}",
+            accept=GITHUB_DIFF_ACCEPT,
+            base_url=base_url,
+        )
+    except GitHubError as exc:
+        if exc.status_code == 404:
+            # The shared `_get` wording is about pull requests; a rewritten branch is the real cause.
+            raise GitHubError(
+                "GitHub cannot compare those commits — the branch was force-pushed. "
+                "Start a new review from the pull request.",
+                404,
+            ) from exc
+        raise
+
+    text = response.text
+    if not text.strip():
+        raise GitHubError("GitHub returned no changes between those commits.", 422)
     return text
 
 

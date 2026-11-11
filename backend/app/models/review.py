@@ -82,6 +82,11 @@ class RoundStatus:
 
 class CodeReview(Base):
     __tablename__ = "code_reviews"
+    __table_args__ = (
+        # One review per (watch, commit): two racing ticks cannot both store a delta review.
+        # Manual reviews have a NULL watch_id, and NULLs are distinct in both engines.
+        UniqueConstraint("watch_id", "commit_id", name="uq_code_reviews_watch_commit"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
@@ -109,6 +114,14 @@ class CodeReview(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     github_review_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Set on a delta review: the review it continues, the watch that produced it, and why it exists.
+    parent_review_id: Mapped[int | None] = mapped_column(
+        ForeignKey("code_reviews.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    watch_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review_watches.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    trigger: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

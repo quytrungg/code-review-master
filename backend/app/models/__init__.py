@@ -1,3 +1,4 @@
+from app.models.cached_pr import CachedPR, InboxStatus
 from app.models.keys import (
     LLM_DEFAULT_BASE_URLS,
     LLM_PROVIDERS,
@@ -21,9 +22,12 @@ from app.models.review import (
 )
 from app.models.settings import Settings
 from app.models.user import User, UserSession
+from app.models.watch import ReviewTrigger, ReviewWatch
 
 __all__ = [
+    "CachedPR",
     "CodeReview",
+    "InboxStatus",
     "LLMCall",
     "LLMPurpose",
     "LLMKey",
@@ -32,7 +36,9 @@ __all__ = [
     "MessageRole",
     "ReviewStatus",
     "ReviewThread",
+    "ReviewTrigger",
     "ReviewVerdict",
+    "ReviewWatch",
     "RoundStatus",
     "Settings",
     "ThreadMessage",

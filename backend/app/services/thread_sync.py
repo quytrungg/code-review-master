@@ -29,6 +29,7 @@ from app.models.review import (
     ThreadStatus,
 )
 from app.services import vcs
+from app.services.apply_service import recompute_status
 from app.services.vcs import PullRef
 
 __all__ = [
@@ -412,6 +413,8 @@ async def sync_review(
             f"Ignored comment {comment_id}: its top-level comment is not part of this review."
         )
 
+    db.commit()
+    review.status = recompute_status(review)
     db.commit()
     db.refresh(review)
     return outcome

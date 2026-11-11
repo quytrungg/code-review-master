@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import iso_utc
+from app.schemas.watch import ReviewWatchRead
 
 
 class CreateReviewRequest(BaseModel):
@@ -161,6 +162,9 @@ class CodeReviewSummary(BaseModel):
     status: str
     verdict: str | None = None
     thread_count: int = 0
+    # Set on a delta review: the review it continues, and what started it (`watch`).
+    parent_review_id: int | None = None
+    trigger: str | None = None
     # Filled on detail responses (`routes/reviews.py::_detail`); the list stays a single query.
     usage: ReviewUsage | None = None
     created_at: str | None = None
@@ -180,6 +184,8 @@ class CodeReviewSummary(BaseModel):
             status=row.status,
             verdict=row.verdict,
             thread_count=len(row.threads),
+            parent_review_id=getattr(row, "parent_review_id", None),
+            trigger=getattr(row, "trigger", None),
             created_at=iso_utc(row.created_at),
             updated_at=iso_utc(row.updated_at),
         )
@@ -193,6 +199,8 @@ class CodeReviewDetail(CodeReviewSummary):
     confidence_percentage: int | None = None
     suggested_verdict_note: str | None = None
     github_review_url: str | None = None
+    # The watch covering this pull request, when there is one: drives the workspace toggle.
+    watch: ReviewWatchRead | None = None
     threads: list[ReviewThreadRead] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

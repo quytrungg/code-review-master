@@ -29,8 +29,10 @@ class LLMPurpose:
     DISCUSS = "discuss"
     VERDICT = "verdict"
     SUMMARISE = "summarise"
+    # The inbox's one-shot prose polish for a quick-review draft.
+    POLISH = "polish"
 
-    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE)
+    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE, POLISH)
 
 
 class LLMCall(Base):

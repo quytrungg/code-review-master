@@ -19,6 +19,7 @@ from app.models.review import (
 )
 from app.schemas.review import DiscussResult, DiscussThread
 from app.services import keys_service, llm_service, prompts, skill_loader, skills_service, verdict
+from app.services.apply_service import recompute_status
 from app.services.diff_parser import language_hints
 from app.services.llm_service import LLMError
 from app.services.review_pipeline import PipelineError
@@ -159,8 +160,10 @@ async def discuss_threads(
             )
         )
 
+    # The first successful discussion turns a fresh draft into an in-discussion review.
     if any(result.ok for result in results):
-        review.status = ReviewStatus.IN_DISCUSSION
+        if review.status == ReviewStatus.DRAFT:
+            review.status = ReviewStatus.IN_DISCUSSION
     db.commit()
 
     # The opinion is a snapshot from ingest; the discussion may have changed it.
@@ -176,5 +179,11 @@ async def discuss_threads(
         db.commit()
         refreshed = True
 
+    # Only recompute when the review was already applied; otherwise trust the discuss write.
+    # A fresh draft that just received a successful response must stay in_discussion, not be
+    # recomputed back to draft because it has no published content yet.
+    if review.status == ReviewStatus.APPLIED:
+        review.status = recompute_status(review)
+    db.commit()
     db.refresh(review)
     return review, results, warnings, refreshed

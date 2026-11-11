@@ -20,6 +20,47 @@ with the exception's first line only, and published as a terminal `error`. A rev
   task**, because `asyncio.create_task` dies with the response. The `vercel` SDK is not a dependency
   (it needs pydantic ≥2.12).
 
+## A large diff is reviewed in parts, never truncated
+
+`review_units.plan_units` is the only decision point: a diff whose rendered files fit
+`diff_max_chars` is **one** call (its own verdict is the review's), and anything past that is packed
+into parts of whole files of at most `review_unit_chars`, at most `llm_review_concurrency` in
+flight. Never split a file; a file larger than a part gets a part of its own and loses whole hunks
+from the end, with the count stated in the prompt and in `code_reviews.notes`. A first hunk that
+alone overflows is cut mid-hunk (nothing else could be shown) and reported the same way.
+
+Each part is a normal `ingest` call: same system prompt, `part i of n` in the user prompt, its own
+`llm_calls` row. Anchoring stays global — every finding is anchored against the full parsed diff,
+so a part can never introduce an anchor the diff does not have. After anchoring: dedupe per
+`(path, line)` keeping the longest body, then cap at `review_max_findings` by severity. A review
+with more than one part gets one extra `verdict` call over the merged findings, because no part saw
+the whole change; if it fails, the opinion stays empty and the review is still `draft`.
+
+Partial failure is not a failed review: the parts that landed are published as `draft` with one note
+per failed part naming the files it did not cover. Every part failing is a failed review, exactly as
+a single failed call always was.
+
+## A watch reviews the delta it already fetched
+
+`watch_service.tick` is the only caller of `vcs.compare`. Per enabled watch it fetches the PR head,
+and — when it moved — claims the delta with a compare-and-set `UPDATE … WHERE last_seen_commit_id =
+<old>` issued in the same transaction as `create_running_review`, so two ticks cannot both insert a
+review (`UNIQUE(watch_id, commit_id)` is the second guard). It then hands `execute` the PR and the
+`compare(old…new)` diff it already has: a delta review must never refetch the whole change, and the
+one place that still reads the full diff is apply's anchor re-validation, which is correct because a
+delta's lines are a subset of the pull request's.
+
+`last_seen_commit_id` advances at creation, not at success: a failed delta review is visible as
+`failed`, the watch keeps moving with later pushes, and the operator can re-run that URL by hand.
+A watch with no base (`NULL`, e.g. created from a review that never fetched) adopts the current head
+on its first check instead of reviewing the whole PR by accident.
+
+The scheduler is the deployment's, not the service's: locally the lifespan starts an asyncio loop
+(never when `SERVERLESS=true` or `WATCH_INTERVAL_MINUTES=0`); serverless uses
+`POST /api/watches/tick` from `vercel.json`'s cron, which runs its reviews inline so they survive the
+response. A tick never holds a transaction across the ingest: the review row is committed first, then
+`run_ingest` opens its own session like any other ingest.
+
 ## Startup differs by mode
 
 - Local and Docker: `init_db()` (alembic upgrade head) and `fail_orphaned_reviews()` at startup —

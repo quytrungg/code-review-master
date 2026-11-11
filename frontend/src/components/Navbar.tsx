@@ -1,18 +1,37 @@
-import { NavLink, useNavigate } from "react-router-dom";
-import { BarChart3, BookOpen, GitPullRequest, LogOut, Settings2, Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { BarChart3, BookOpen, GitPullRequest, Inbox, LogOut, Settings2, Sparkles } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { api } from "@/services/api";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { to: "/", label: "Reviews", icon: GitPullRequest, end: true },
-  { to: "/skills", label: "Skills", icon: BookOpen, end: false },
-  { to: "/analytics", label: "Analytics", icon: BarChart3, end: false },
-  { to: "/settings", label: "Settings", icon: Settings2, end: false },
+  { to: "/inbox", label: "PR Inbox", icon: Inbox, end: true, badge: true },
+  { to: "/", label: "Reviews", icon: GitPullRequest, end: true, badge: false },
+  { to: "/skills", label: "Skills", icon: BookOpen, end: false, badge: false },
+  { to: "/analytics", label: "Analytics", icon: BarChart3, end: false, badge: false },
+  { to: "/settings", label: "Settings", icon: Settings2, end: false, badge: false },
 ];
 
 export function Navbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [unread, setUnread] = useState(0);
+
+  useEffect(() => {
+    // A failure here must never break the chrome: the badge is best-effort.
+    let cancelled = false;
+    api
+      .listInbox({ unread: true })
+      .then((rows) => {
+        if (!cancelled) setUnread(rows.length);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname]);
 
   async function signOut() {
     await logout();
@@ -32,7 +51,7 @@ export function Navbar() {
         </NavLink>
 
         <nav className="flex items-center gap-1">
-          {links.map(({ to, label, icon: Icon, end }) => (
+          {links.map(({ to, label, icon: Icon, end, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -48,6 +67,11 @@ export function Navbar() {
             >
               <Icon className="h-4 w-4" />
               {label}
+              {badge && unread > 0 ? (
+                <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accentStrong px-1 text-[10px] font-semibold text-white">
+                  {unread}
+                </span>
+              ) : null}
             </NavLink>
           ))}
 

@@ -6,6 +6,7 @@ import { AuthProvider } from "@/context/AuthContext";
 import { SettingsProvider } from "@/context/SettingsContext";
 import { AnalyticsPage } from "@/pages/AnalyticsPage";
 import { DashboardPage } from "@/pages/DashboardPage";
+import { InboxPage } from "@/pages/InboxPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { ReviewDetailPage } from "@/pages/ReviewDetailPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -29,6 +30,7 @@ function Workspace() {
             }
           />
           <Route path="/setup" element={<SetupPage />} />
+          <Route path="/inbox" element={<InboxPage />} />
           <Route path="/skills" element={<SkillsPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<SettingsPage />} />

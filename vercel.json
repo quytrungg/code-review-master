@@ -24,5 +24,8 @@
     { "source": "/docs", "destination": { "service": "api" } },
     { "source": "/openapi.json", "destination": { "service": "api" } },
     { "source": "/(.*)", "destination": { "service": "web" } }
+  ],
+  "crons": [
+    { "path": "/api/watches/tick", "schedule": "*/10 * * * *" }
   ]
 }

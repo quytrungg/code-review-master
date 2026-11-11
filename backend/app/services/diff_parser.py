@@ -73,6 +73,22 @@ class Hunk:
     section: str
     lines: list[Line] = field(default_factory=list)
 
+    def render_numbered(self) -> str:
+        """This hunk with the RIGHT-side line number in the left column.
+
+        Deleted lines have no new-file number, so their column is blank — this keeps every number
+        the model can see a legal anchor for a comment on the new file. Rendered per hunk so a
+        prompt budget can drop whole hunks instead of cutting one in half.
+        """
+        out: list[str] = [self.header]
+        for line in self.lines:
+            if line.kind == META:
+                out.append(line.text)
+                continue
+            number = f"{line.new_no:>6}" if line.new_no is not None else " " * 6
+            out.append(f"{number} {line.sign} {line.text}")
+        return "\n".join(out)
+
 
 @dataclass
 class FileDiff:
@@ -97,21 +113,8 @@ class FileDiff:
         return {line.new_no: line for h in self.hunks for line in h.lines if line.new_no is not None}
 
     def render_numbered(self) -> str:
-        """Render hunks with the RIGHT-side line number in the left column.
-
-        Deleted lines have no new-file number, so their column is blank — this keeps every
-        number the model can see a legal anchor for a comment on the new file.
-        """
-        out: list[str] = []
-        for hunk in self.hunks:
-            out.append(hunk.header)
-            for line in hunk.lines:
-                if line.kind == META:
-                    out.append(line.text)
-                    continue
-                number = f"{line.new_no:>6}" if line.new_no is not None else " " * 6
-                out.append(f"{number} {line.sign} {line.text}")
-        return "\n".join(out)
+        """Every hunk, numbered. See `Hunk.render_numbered`."""
+        return "\n".join(hunk.render_numbered() for hunk in self.hunks)
 
 
 def _unquote_path(raw: str) -> str:

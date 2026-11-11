@@ -205,7 +205,7 @@ def test_totals_volume_and_cost(client):
     assert body["window_days"] == 30
 
     purposes = {row["purpose"]: row for row in body["by_purpose"]}
-    assert list(purposes) == ["ingest", "discuss", "verdict", "summarise"]
+    assert list(purposes) == ["ingest", "discuss", "verdict", "summarise", "polish"]
     assert purposes["ingest"]["calls"] == 2
     assert purposes["ingest"]["total_tokens"] == 1500
     assert purposes["discuss"]["calls"] == 1

@@ -1,5 +1,8 @@
 export type ReviewStatus = "running" | "draft" | "in_discussion" | "applied" | "failed";
 export type ReviewVerdict = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
+export type InboxStatus = "needs_review" | "approved" | "request_changed" | "commented";
+export type CachedPRInvolvement = "reviewer" | "assignee" | "author";
+export type QuickReviewEvent = ReviewVerdict;
 export type MessageRole = "assistant" | "user" | "system";
 export type ThreadOrigin = "AI_GENERATED" | "GITHUB_EXISTING";
 export type ThreadStatus = "active" | "needs_response" | "applied" | "resolved";
@@ -294,10 +297,61 @@ export interface CodeReviewSummary {
   status: ReviewStatus;
   verdict: ReviewVerdict | null;
   thread_count: number;
+  /** Set on a delta review: the review it continues. */
+  parent_review_id: number | null;
+  /** `watch` for a review a watch started; `null` when the operator started it. */
+  trigger: string | null;
   /** Present on detail responses; `null` in the list. */
   usage: ReviewUsage | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+export interface CachedPR {
+  id: number;
+  pr_url: string;
+  repo_owner: string;
+  repo_name: string;
+  pr_number: number;
+  title: string;
+  author_username: string;
+  author_avatar_url: string | null;
+  status: InboxStatus;
+  involvement: CachedPRInvolvement;
+  has_unread_replies: boolean;
+  unread_replies_count: number;
+  last_user_action_at: string | null;
+  last_github_activity_at: string | null;
+  linked_review_id: number | null;
+  last_synced_at: string | null;
+}
+
+export interface InboxSyncResponse {
+  items: CachedPR[];
+  disappeared: number;
+  warnings: string[];
+}
+
+export interface InboxFilters {
+  status?: InboxStatus;
+  repo?: string;
+  unread?: boolean;
+}
+
+export interface ReviewWatch {
+  id: number;
+  pr_url: string;
+  vcs: string;
+  repo_full_name: string | null;
+  pr_number: number | null;
+  skill_foundation: string | null;
+  model_used: string | null;
+  last_seen_commit_id: string | null;
+  last_review_id: number | null;
+  enabled: boolean;
+  last_checked_at: string | null;
+  last_error: string | null;
+  created_at: string | null;
 }
 
 export interface DiscussResultItem {
@@ -359,6 +413,8 @@ export interface CodeReviewDetail extends CodeReviewSummary {
   confidence_percentage: number | null;
   suggested_verdict_note: string | null;
   github_review_url: string | null;
+  /** The watch covering this pull request, when there is one. */
+  watch: ReviewWatch | null;
   threads: ReviewThread[];
   warnings: string[];
 }

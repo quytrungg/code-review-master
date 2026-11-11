@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -31,15 +32,7 @@ from app.models.review import (
     ThreadStatus,
 )
 from app.schemas.review import RawFinding
-from app.services import (
-    keys_service,
-    llm_service,
-    prompts,
-    skill_loader,
-    skills_service,
-    thread_sync,
-    vcs,
-)
+from app.services import github_inbox_service, keys_service, llm_service, prompts, review_units, skill_loader, skills_service, thread_sync, vcs, verdict
 from app.services.diff_parser import (
     anchor_line,
     language_hints,
@@ -50,10 +43,12 @@ from app.services.diff_parser import (
     snippet_contains_line,
 )
 from app.models.llm_call import LLMPurpose
+from app.models.watch import ReviewTrigger
 from app.services.llm_service import LLMError
 from app.services.progress import ERROR as PROGRESS_ERROR
 from app.services.progress import WARN as PROGRESS_WARN
 from app.services.progress import bus
+from app.services.pull_request import PullRequestInfo
 from app.services.settings_service import get_or_create
 from app.services.skills_service import SkillError
 
@@ -125,14 +120,77 @@ def anchor_findings(findings: list[RawFinding], files, warnings: list[str]) -> l
     return anchored
 
 
+SEVERITY_ORDER = ("critical", "high", "medium", "low")
+SEVERITY_RE = re.compile(r"\b(critical|high|medium|low)\b", re.IGNORECASE)
+
+
+def _severity_rank(comment: str) -> int:
+    """0 for Critical … 3 for Low, 4 when the comment does not lead with a severity."""
+    match = SEVERITY_RE.search((comment or "")[:200])
+    return SEVERITY_ORDER.index(match.group(1).lower()) if match else len(SEVERITY_ORDER)
+
+
+def dedupe_findings(anchored: list[AnchoredFinding], warnings: list[str]) -> list[AnchoredFinding]:
+    """One finding per changed line, keeping the longest body.
+
+    Parts own disjoint files, so a finding can only be duplicated when the model reports the same
+    line twice (from two parts that both drifted outside their file list, or twice within one part).
+    GitHub shows one comment per line anyway, so merging is what the reviewer wants. A line that
+    genuinely carries two unrelated defects keeps only the longer text — accepted, and the reason
+    this is a dedupe rather than a score.
+    """
+    kept: dict[tuple[str, int], AnchoredFinding] = {}
+    order: list[tuple[str, int]] = []
+    dropped = 0
+    for finding in anchored:
+        key = (finding.path, finding.line_number)
+        existing = kept.get(key)
+        if existing is None:
+            kept[key] = finding
+            order.append(key)
+            continue
+        dropped += 1
+        if len(finding.comment) > len(existing.comment):
+            kept[key] = finding
+    if dropped:
+        warnings.append(f"Dropped {dropped} duplicate finding(s) raised more than once.")
+    return [kept[key] for key in order]
+
+
+def cap_findings(
+    anchored: list[AnchoredFinding], limit: int, warnings: list[str]
+) -> list[AnchoredFinding]:
+    """Keep at most `limit` findings, highest severity first, in their original order."""
+    if limit <= 0 or len(anchored) <= limit:
+        return anchored
+    ranked = sorted(range(len(anchored)), key=lambda i: (_severity_rank(anchored[i].comment), i))
+    keep = sorted(ranked[:limit])
+    warnings.append(
+        f"Kept the {limit} highest-severity finding(s); "
+        f"{len(anchored) - limit} were dropped by the review cap."
+    )
+    return [anchored[index] for index in keep]
+
+
 def create_running_review(
     db: Session,
     user_id: int,
     pr_url: str,
     model_id: str,
     skill_foundation: str | None = None,
+    *,
+    commit_id: str | None = None,
+    watch_id: int | None = None,
+    parent_review_id: int | None = None,
+    trigger: str | None = None,
 ) -> CodeReview:
-    """Validate the request and persist a `running` review row; no network calls."""
+    """Validate the request and persist a `running` review row; no network calls.
+
+    The keyword arguments exist for delta reviews: a watch already knows the commit it is reviewing
+    and which review (and watch) the new row continues, and setting `watch_id` + `commit_id` here
+    means the `UNIQUE(watch_id, commit_id)` constraint rejects a duplicate at insert time — one
+    commit, one review, even if two ticks race.
+    """
     try:
         ref = vcs.parse_pr_url(pr_url)
     except vcs.VCSError as exc:
@@ -169,10 +227,16 @@ def create_running_review(
         model_used=model.id,
         skill_foundation=foundation.id,
         status=ReviewStatus.RUNNING,
+        commit_id=commit_id,
+        watch_id=watch_id,
+        parent_review_id=parent_review_id,
+        trigger=trigger,
     )
     db.add(review)
     db.commit()
     db.refresh(review)
+    # An inbox row for this PR flips to "Open review" now, not at the next GitHub sync.
+    github_inbox_service.link_review(db, user_id, review.pr_url, review.id)
     bus.publish(
         review.id,
         "queued",
@@ -202,14 +266,20 @@ def schedule_ingest(review_id: int, background: BackgroundScheduler | None = Non
     task.add_done_callback(_tasks.discard)
 
 
-async def run_ingest(review_id: int) -> None:
+async def run_ingest(
+    review_id: int,
+    *,
+    pr: PullRequestInfo | None = None,
+    diff_text: str | None = None,
+) -> None:
+    """Run the pipeline for one review; `pr`/`diff_text` skip the refetch a watch already did."""
     db = SessionLocal()
     try:
         review = db.get(CodeReview, review_id)
         if review is None or review.status != ReviewStatus.RUNNING:
             return
         try:
-            await execute(db, review)
+            await execute(db, review, pr=pr, diff_text=diff_text)
         except Exception as exc:  # noqa: BLE001 - a crash must never leave the review `running`
             db.rollback()
             logger.exception("Ingest crashed for review %s", review_id)
@@ -241,19 +311,43 @@ def _fail(db: Session, review: CodeReview, detail: str) -> None:
     logger.warning("Ingest failed for review %s: %s", review.id, detail)
 
 
-async def execute(db: Session, review: CodeReview) -> list[str]:
-    """Run the pipeline for an existing `running` review. Never raises for expected failures."""
+async def execute(
+    db: Session,
+    review: CodeReview,
+    *,
+    pr: PullRequestInfo | None = None,
+    diff_text: str | None = None,
+) -> list[str]:
+    """Run the pipeline for an existing `running` review. Never raises for expected failures.
+
+    `pr` and `diff_text` are the snapshot a watch already fetched: passing the diff makes the review
+    cover only that delta, and passing the PR saves a second metadata call.
+    """
     config = get_settings()
     warnings: list[str] = []
     settings_row = get_or_create(db, review.user_id)
-    bus.publish(review.id, "fetch_pr", "Fetching pull request", detail=review.pr_url, progress=8)
+    if review.trigger == ReviewTrigger.WATCH:
+        warnings.append(
+            f"Delta review: only commits pushed since review #{review.parent_review_id} were "
+            "reviewed, and that review's threads were not re-validated."
+            if review.parent_review_id
+            else "Delta review: only the commits added since the last checked head were reviewed."
+        )
+    bus.publish(
+        review.id,
+        "fetch_pr",
+        "Fetching pull request" if pr is None else "Using the watched pull request",
+        detail=review.pr_url,
+        progress=8,
+    )
 
     try:
         ref = vcs.parse_pr_url(review.pr_url)
         key = keys_service.version_control_for(db, review.user_id, ref.vcs)
         if key is None:
             raise vcs.VCSError(keys_service.missing_vcs_message(ref.vcs), 400)
-        pr = await vcs.fetch(key, ref)
+        if pr is None:
+            pr = await vcs.fetch(key, ref)
         # Persist the identity immediately so the header is informative while the job runs.
         review.pr_url = pr.html_url
         review.pr_title = pr.title
@@ -270,12 +364,18 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
             progress=18,
         )
 
-        bus.publish(review.id, "fetch_diff", "Reading the diff", progress=24)
-        diff_text = await vcs.fetch_diff(key, ref)
         bus.publish(
             review.id,
             "fetch_diff",
-            "Diff received",
+            "Reading the delta" if diff_text is not None else "Reading the diff",
+            progress=24,
+        )
+        if diff_text is None:
+            diff_text = await vcs.fetch_diff(key, ref)
+        bus.publish(
+            review.id,
+            "fetch_diff",
+            "Delta received" if review.trigger == ReviewTrigger.WATCH else "Diff received",
             detail=f"{len(diff_text):,} characters",
             progress=30,
         )
@@ -351,14 +451,30 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
     )
 
     system_prompt = prompts.build_system_prompt(bundle.text)
-    user_prompt, truncated = prompts.build_user_prompt(pr, files, config.diff_max_chars)
-    if truncated:
-        warnings.append("The diff was truncated to fit the model context.")
+    units = review_units.plan_units(files, config.review_unit_chars, config.diff_max_chars)
+    built_prompts: list[prompts.UserPrompt] = []
+    for unit in units:
+        built = prompts.build_user_prompt(
+            pr, unit.files, unit.budget, part=unit.index, total=unit.total
+        )
+        if built.truncated:
+            if len(units) == 1:
+                warnings.append("The diff was truncated to fit the model context.")
+            else:
+                warnings.append(
+                    f"Part {unit.index} of {unit.total} was reviewed without "
+                    f"{', '.join(built.omitted)}."
+                )
+        built_prompts.append(built)
+
     bus.publish(
         review.id,
         "prompt",
         "Building the prompt",
-        detail=f"{len(system_prompt) + len(user_prompt):,} characters",
+        detail=(
+            f"{len(system_prompt) + sum(len(built.text) for built in built_prompts):,} characters"
+            + (f" across {len(units)} parts" if len(units) > 1 else "")
+        ),
         progress=50,
     )
 
@@ -367,34 +483,87 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
         review.id,
         "model",
         f"Asking {model.name}",
-        detail="Waiting for the model to return findings…",
+        detail=(
+            f"{len(units)} parts, {max(1, min(len(units), config.llm_review_concurrency))} at a time…"
+            if len(units) > 1
+            else "Waiting for the model to return findings…"
+        ),
         progress=55,
     )
     try:
         credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
-        outcome = await llm_service.generate(
-            credentials,
-            model,
-            system_prompt,
-            user_prompt,
-            json_mode=True,
-            purpose=LLMPurpose.INGEST,
-            review_id=review.id,
-        )
-        result = llm_service.extract_review_result(outcome.text)
-        payload = result.findings
     except keys_service.KeyError as exc:
         _fail(db, review, exc.detail)
         return warnings
-    except LLMError as exc:
-        _fail(db, review, str(exc))
+
+    semaphore = asyncio.Semaphore(max(1, config.llm_review_concurrency))
+    finished: list[int] = []
+
+    async def run_part(unit: review_units.ReviewUnit, built: prompts.UserPrompt):
+        async with semaphore:
+            outcome = await llm_service.generate(
+                credentials,
+                model,
+                system_prompt,
+                built.text,
+                json_mode=True,
+                purpose=LLMPurpose.INGEST,
+                review_id=review.id,
+            )
+        parsed = llm_service.extract_review_result(outcome.text)
+        finished.append(unit.index)
+        # One row per finished part, on the existing bus: the UI renders any stage/label pair.
+        bus.publish(
+            review.id,
+            "model",
+            f"Reviewed {len(unit.files)} file(s) (part {unit.index} of {unit.total})",
+            detail=f"{len(parsed.findings)} finding(s)",
+            progress=55 + round(23 * len(finished) / len(units)),
+        )
+        return parsed
+
+    gathered = await asyncio.gather(
+        *(run_part(unit, built) for unit, built in zip(units, built_prompts)),
+        return_exceptions=True,
+    )
+
+    payload: list = []
+    successful: list[llm_service.ReviewResult] = []
+    failures: list[tuple[review_units.ReviewUnit, BaseException]] = []
+    for unit, item in zip(units, gathered):
+        if isinstance(item, BaseException):
+            if not isinstance(item, Exception):  # CancelledError and friends must propagate
+                raise item
+            failures.append((unit, item))
+            finished.append(unit.index)  # a failed part still advances the ramp; never goes back
+            bus.publish(
+                review.id,
+                "model",
+                f"Part {unit.index} of {unit.total} failed",
+                detail=_short_error(item),
+                level=PROGRESS_WARN,
+                progress=55 + round(23 * len(finished) / len(units)),
+            )
+            continue
+        successful.append(item)
+        payload.extend(item.findings)
+
+    if not successful:
+        # Nothing landed: this is a failed review, exactly as a single failed call always was.
+        first = failures[0][1]
+        _fail(
+            db,
+            review,
+            str(first) if isinstance(first, llm_service.LLMError) else _short_error(first),
+        )
         return warnings
 
-    review.suggested_verdict = result.verdict
-    review.confidence_percentage = result.confidence
-
-    # Keep the PR identity now that it is known, so the dashboard can show it.
-    db.commit()
+    for unit, error in failures:
+        reason = str(error) if isinstance(error, llm_service.LLMError) else _short_error(error)
+        warnings.append(
+            f"Part {unit.index} of {unit.total} could not be reviewed ({reason}); "
+            "its files are not covered by this result."
+        )
 
     bus.publish(
         review.id,
@@ -402,8 +571,17 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
         "Parsing findings",
         detail=(
             f"{len(payload)} finding(s) returned"
-            + (f" · verdict {result.verdict}" if result.verdict else "")
-            + (f" ({result.confidence}%)" if result.confidence is not None else "")
+            + (f" across {len(units)} parts" if len(units) > 1 else "")
+            + (
+                f" · verdict {successful[0].verdict}"
+                if len(units) == 1 and successful[0].verdict
+                else ""
+            )
+            + (
+                f" ({successful[0].confidence}%)"
+                if len(units) == 1 and successful[0].confidence is not None
+                else ""
+            )
         ),
         progress=80,
     )
@@ -416,6 +594,8 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
             warnings.append(f"Ignored a malformed finding: {exc.errors()[0].get('msg', 'invalid')}")
 
     anchored = anchor_findings(findings, files, warnings)
+    anchored = dedupe_findings(anchored, warnings)
+    anchored = cap_findings(anchored, config.review_max_findings, warnings)
     bus.publish(
         review.id,
         "anchor",
@@ -423,6 +603,31 @@ async def execute(db: Session, review: CodeReview) -> list[str]:
         detail=f"{len(anchored)} anchored, {len(findings) - len(anchored)} dropped",
         progress=88,
     )
+
+    if len(units) == 1:
+        # One call saw the whole diff, so its own opinion is the review's opinion.
+        review.suggested_verdict = successful[0].verdict
+        review.confidence_percentage = successful[0].confidence
+    else:
+        # No part saw the whole change; one pass over the merged findings decides the opinion.
+        bus.publish(
+            review.id,
+            "verdict",
+            "Re-checking the verdict",
+            detail=f"{len(anchored)} finding(s) from {len(successful)} part(s)",
+            progress=90,
+        )
+        decided = await verdict.evaluate_findings(db, review, anchored)
+        if decided is None:
+            warnings.append(
+                "The verdict could not be re-evaluated after merging the parts; "
+                "the opinion is left empty."
+            )
+        else:
+            verdict.apply_outcome(review, decided)
+
+    # Keep the PR identity and the opinion now that they are known, so the dashboard can show them.
+    db.commit()
 
     for item in anchored:
         # A thread's ordinal in the UI is its position, which is 1-based; keep that stable.

@@ -195,6 +195,44 @@ async def fetch_diff(token: str, base_url: str, project_path: str, iid: int) -> 
     return diff
 
 
+async def compare(
+    token: str, base_url: str, project_path: str, from_sha: str, to_sha: str
+) -> str:
+    """Unified diff between two commits — the delta a watched merge request has gained."""
+    path = (
+        f"/projects/{_project(project_path)}/repository/compare"
+        f"?from={quote(from_sha, safe='')}&to={quote(to_sha, safe='')}"
+    )
+    try:
+        response = await _request("GET", base_url, token, path)
+    except GitLabError as exc:
+        if exc.status_code == 404:
+            raise GitLabError(
+                "GitLab cannot compare those commits — the branch may have been rewritten. "
+                "Start a new review from the merge request.",
+                404,
+            ) from exc
+        raise
+    if response.status_code >= 400:
+        raise GitLabError(f"GitLab returned HTTP {response.status_code}: {_message(response)}")
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise GitLabError("GitLab returned a malformed comparison response.") from exc
+    changes = body.get("diffs") if isinstance(body, dict) else None
+    if not isinstance(changes, list):
+        raise GitLabError("GitLab returned an unexpected comparison shape.")
+
+    sections = [
+        _render_change(change) for change in changes if isinstance(change, dict)
+    ]
+    diff = "".join(section for section in sections if section)
+    if not diff.strip():
+        raise GitLabError("GitLab returned no textual changes between those commits.", 422)
+    return diff
+
+
 def inline_position(
     path: str, line: int, *, base_sha: str, start_sha: str, head_sha: str
 ) -> dict:
