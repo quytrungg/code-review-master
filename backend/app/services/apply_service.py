@@ -31,6 +31,7 @@ from app.models.review import (
     ThreadRound,
     ThreadStatus,
 )
+from app.models.watch import ReviewTrigger
 from app.schemas.review import ApplyRequest
 from app.services import github_service, keys_service, thread_sync, vcs
 from app.services.diff_parser import parse_diff, reviewable_files, resolve_path
@@ -419,6 +420,10 @@ async def decide_round(
 async def apply_review(
     db: Session, review: CodeReview, payload: ApplyRequest
 ) -> tuple[CodeReview, dict, list[str]]:
+    if review.trigger == ReviewTrigger.COMPARISON:
+        raise PipelineError(
+            "A comparison review is read-only: accept and apply the primary review instead.", 409
+        )
     try:
         ref = vcs.parse_pr_url(review.pr_url)
     except VCSError as exc:
@@ -443,9 +448,17 @@ async def apply_review(
     approval_only = payload.event == "APPROVE" and not initial and not replies
 
     if not initial and not replies:
-        if review.status == ReviewStatus.APPLIED:
-            raise PipelineError("Nothing is pending: everything in this review is already on GitHub.", 409)
-        if not approval_only:
+        # An approval is a state change on the pull request, not pending content: a review that
+        # already published a COMMENT may still approve, as long as it has not approved already.
+        if not (approval_only and not review.approval_published):
+            if approval_only:
+                raise PipelineError(
+                    "This review already approved the pull request. Nothing else is pending.", 409
+                )
+            if review.status == ReviewStatus.APPLIED:
+                raise PipelineError(
+                    "Nothing is pending: everything in this review is already on GitHub.", 409
+                )
             raise PipelineError(
                 "Nothing is accepted yet: accept the findings you want to publish, then apply again.",
                 400,
@@ -511,6 +524,9 @@ async def apply_review(
 
         comments_posted = published.get("comments_posted", 0)
         review_url = published.get("url")
+        if payload.event == "APPROVE":
+            # Recorded only when the publish call went out: this is the duplicate-approval guard.
+            review.approval_published = True
 
         if initial:
             await _backfill_root_ids(review, key, ref, published, initial, warnings)

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, Coins, Gauge, Loader2, RefreshCw, Target } from "lucide-react";
+import { BarChart3, Coins, Gauge, Loader2, RefreshCw, Repeat, Target } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Input, Label, Select } from "@/components/ui/Input";
-import { compactNumber, estimatedCost, formatDuration, formatPercent } from "@/lib/utils";
+import { compactNumber, estimatedCost, formatDuration, formatPercent, relativeTime } from "@/lib/utils";
 import { api, ApiError } from "@/services/api";
 import type { AnalyticsResponse, BudgetStatus, ModelUsage, PurposeUsage } from "@/types";
 
@@ -17,6 +17,7 @@ const PURPOSE_LABELS: Record<PurposeUsage["purpose"], string> = {
   summarise: "Summarise",
   polish: "Polish",
   evolve: "Evolve",
+  lesson: "Lesson",
 };
 
 function Kpi({ label, value, hint }: { label: string; value: string; hint: string }) {
@@ -350,6 +351,41 @@ export function AnalyticsPage() {
 
             <BudgetManager budget={data.budget} onSaved={load} />
           </div>
+
+          <Card>
+            <CardHeader
+              icon={<Repeat className="h-4 w-4" />}
+              title="Recurring findings"
+              description="Normalised finding keys seen in more than one review in the same repository. Similar wording, not proof of the same defect."
+            />
+            <CardBody>
+              {data.recurring.length === 0 ? (
+                <p className="text-xs text-inkMuted">
+                  No pattern has come back in this window. Find one review's history from the
+                  dashboard search.
+                </p>
+              ) : (
+                <ul className="divide-y divide-border rounded-xl border border-border">
+                  {data.recurring.map((row) => (
+                    <li
+                      key={`${row.repo_full_name}:${row.key}`}
+                      className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2.5 text-xs"
+                    >
+                      <div className="min-w-0 space-y-0.5">
+                        <p className="font-mono text-[11px] text-inkMuted">{row.repo_full_name}</p>
+                        <p className="truncate text-ink">{row.key}</p>
+                      </div>
+                      <span className="shrink-0 text-inkMuted">
+                        {row.reviews} review{row.reviews === 1 ? "" : "s"} · {row.findings} finding
+                        {row.findings === 1 ? "" : "s"}
+                        {row.last_seen ? ` · last ${relativeTime(row.last_seen)}` : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardBody>
+          </Card>
         </>
       ) : null}
     </div>

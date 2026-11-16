@@ -32,7 +32,20 @@ from app.models.review import (
     ThreadStatus,
 )
 from app.schemas.review import RawFinding
-from app.services import github_inbox_service, keys_service, llm_service, prompts, review_units, skill_loader, skills_service, thread_sync, vcs, verdict
+from app.services import (
+    checks_service,
+    finding_search,
+    github_inbox_service,
+    keys_service,
+    llm_service,
+    prompts,
+    review_units,
+    skill_loader,
+    skills_service,
+    thread_sync,
+    vcs,
+    verdict,
+)
 from app.services.diff_parser import (
     anchor_line,
     language_hints,
@@ -82,6 +95,9 @@ class AnchoredFinding:
     line_number: int
     diff_hunk: str
     comment: str
+    # `AI_GENERATED` for model output, `CHECK` for a deterministic pre-pass hit. The pipeline
+    # persists this per thread; it also decides which comment wins a shared line in `dedupe`.
+    origin: str = ThreadOrigin.AI_GENERATED
 
 
 def anchor_findings(findings: list[RawFinding], files, warnings: list[str]) -> list[AnchoredFinding]:
@@ -120,6 +136,34 @@ def anchor_findings(findings: list[RawFinding], files, warnings: list[str]) -> l
     return anchored
 
 
+def check_findings(findings: list[checks_service.CheckFinding], files, warnings: list[str]):
+    """Anchor deterministic hits through the same path as model findings.
+
+    The line numbers come from the parsed diff, so anchoring is a formality — which is the point:
+    a check can never point at a line that does not exist.
+    """
+    anchored: list[AnchoredFinding] = []
+    for finding in findings:
+        target = resolve_path(files, finding.path)
+        if target is None:
+            warnings.append(f"Dropped a check finding for a file that is not in the diff: {finding.path}")
+            continue
+        line_number = anchor_line(target, finding.line_number)
+        if line_number is None:
+            continue
+        rebuilt = rebuild_snippet(target, line_number)
+        anchored.append(
+            AnchoredFinding(
+                path=target.path,
+                line_number=line_number,
+                diff_hunk=rebuilt or "",
+                comment=finding.comment,
+                origin=ThreadOrigin.CHECK,
+            )
+        )
+    return anchored
+
+
 SEVERITY_ORDER = ("critical", "high", "medium", "low")
 SEVERITY_RE = re.compile(r"\b(critical|high|medium|low)\b", re.IGNORECASE)
 
@@ -150,6 +194,12 @@ def dedupe_findings(anchored: list[AnchoredFinding], warnings: list[str]) -> lis
             order.append(key)
             continue
         dropped += 1
+        # A deterministic check wins its line: it is certain, and it costs nothing to keep.
+        if existing.origin == ThreadOrigin.CHECK and finding.origin != ThreadOrigin.CHECK:
+            continue
+        if finding.origin == ThreadOrigin.CHECK and existing.origin != ThreadOrigin.CHECK:
+            kept[key] = finding
+            continue
         if len(finding.comment) > len(existing.comment):
             kept[key] = finding
     if dropped:
@@ -183,6 +233,7 @@ def create_running_review(
     watch_id: int | None = None,
     parent_review_id: int | None = None,
     trigger: str | None = None,
+    policy_id: int | None = None,
 ) -> CodeReview:
     """Validate the request and persist a `running` review row; no network calls.
 
@@ -231,6 +282,7 @@ def create_running_review(
         watch_id=watch_id,
         parent_review_id=parent_review_id,
         trigger=trigger,
+        policy_id=policy_id,
     )
     db.add(review)
     db.commit()
@@ -354,7 +406,16 @@ async def execute(
         review.pr_number = pr.number
         review.repo_full_name = pr.project
         review.vcs = pr.vcs
-        review.commit_id = pr.head_sha
+        if review.trigger == ReviewTrigger.COMPARISON and review.commit_id:
+            # A comparison is anchored to the primary's commit, so the two findings sets line up.
+            if review.commit_id != pr.head_sha:
+                warnings.append(
+                    f"The pull request head moved to {pr.head_sha[:7]} since review "
+                    f"#{review.parent_review_id} was ingested; this comparison keeps commit "
+                    f"{review.commit_id[:7]} for anchoring, but the diff shown is the current head."
+                )
+        else:
+            review.commit_id = pr.head_sha
         db.commit()
         bus.publish(
             review.id,
@@ -401,10 +462,32 @@ async def execute(
             f"Skipped {len(skipped)} generated/vendored file(s): {', '.join(skipped[:5])}"
         )
 
+    # Deterministic checks run before the model: zero tokens, and the model is told what they
+    # already found so it does not spend a call repeating a `ghp_…` token it also noticed.
+    enabled_packs = checks_service.enabled_packs(list(getattr(settings_row, "check_packs", None) or []))
+    check_hits: list[checks_service.CheckFinding] = []
+    if enabled_packs:
+        check_hits = checks_service.scan(files, enabled_packs, warnings)
+        totals = checks_service.counts(check_hits)
+        if totals:
+            warnings.append(f"Deterministic checks: {checks_service.describe(totals)}.")
+        bus.publish(
+            review.id,
+            "checks",
+            "Deterministic checks",
+            detail=(
+                f"{checks_service.describe(totals)} finding(s)"
+                if totals
+                else f"Nothing found in {', '.join(pack.id for pack in enabled_packs)}"
+            ),
+            progress=38,
+        )
+
     # Existing review comments are imported before the model runs: both kinds of thread are
-    # first-class from the moment the workspace opens.
+    # first-class from the moment the workspace opens. A comparison review is findings-only, so it
+    # neither duplicates the PR's threads nor spends a comments call.
     imported = 0
-    if review.vcs == "github":
+    if review.vcs == "github" and review.trigger != ReviewTrigger.COMPARISON:
         try:
             existing = await vcs.fetch_comments(key, ref)
             imported = thread_sync.ingest_existing_threads(
@@ -455,7 +538,12 @@ async def execute(
     built_prompts: list[prompts.UserPrompt] = []
     for unit in units:
         built = prompts.build_user_prompt(
-            pr, unit.files, unit.budget, part=unit.index, total=unit.total
+            pr,
+            unit.files,
+            unit.budget,
+            part=unit.index,
+            total=unit.total,
+            already_reported=[f"{hit.path}:{hit.line_number}" for hit in check_hits],
         )
         if built.truncated:
             if len(units) == 1:
@@ -594,13 +682,18 @@ async def execute(
             warnings.append(f"Ignored a malformed finding: {exc.errors()[0].get('msg', 'invalid')}")
 
     anchored = anchor_findings(findings, files, warnings)
-    anchored = dedupe_findings(anchored, warnings)
+    anchored_checks = check_findings(check_hits, files, warnings)
+    # Checks first, so `dedupe_findings` sees them as the incumbent on their line.
+    anchored = dedupe_findings(anchored_checks + anchored, warnings)
     anchored = cap_findings(anchored, config.review_max_findings, warnings)
     bus.publish(
         review.id,
         "anchor",
         "Anchoring findings",
-        detail=f"{len(anchored)} anchored, {len(findings) - len(anchored)} dropped",
+        detail=(
+            f"{len(anchored)} anchored"
+            + (f" ({len(anchored_checks)} from deterministic checks)" if anchored_checks else "")
+        ),
         progress=88,
     )
 
@@ -637,9 +730,10 @@ async def execute(
             line_number=item.line_number,
             diff_hunk=item.diff_hunk,
             side="RIGHT",
-            origin=ThreadOrigin.AI_GENERATED,
+            origin=item.origin,
             current_round=1,
             thread_status=ThreadStatus.ACTIVE,
+            norm_key=finding_search.normalise(item.comment),
         )
         thread.messages.append(
             ThreadMessage(role=MessageRole.ASSISTANT, content=item.comment, round_number=1)

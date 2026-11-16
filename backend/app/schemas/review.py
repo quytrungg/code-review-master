@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.common import iso_utc
 from app.schemas.watch import ReviewWatchRead
@@ -199,6 +199,8 @@ class CodeReviewDetail(CodeReviewSummary):
     confidence_percentage: int | None = None
     suggested_verdict_note: str | None = None
     github_review_url: str | None = None
+    # True once this review approved the pull request; the apply button reads it to avoid a duplicate.
+    approval_published: bool = False
     # The watch covering this pull request, when there is one: drives the workspace toggle.
     watch: ReviewWatchRead | None = None
     threads: list[ReviewThreadRead] = Field(default_factory=list)
@@ -216,6 +218,7 @@ class CodeReviewDetail(CodeReviewSummary):
             confidence_percentage=row.confidence_percentage,
             suggested_verdict_note=getattr(row, "suggested_verdict_note", None),
             github_review_url=row.github_review_url,
+            approval_published=bool(getattr(row, "approval_published", False)),
             threads=[
                 ReviewThreadRead.from_row(thread, ordinal=index + 1)
                 for index, thread in enumerate(row.threads)
@@ -305,6 +308,55 @@ class LessonDraftResponse(BaseModel):
 
     title: str
     body: str
+
+
+MAX_PUSHBACK_ARGUMENT_CHARS = 2000
+
+
+class VerdictPushbackRequest(BaseModel):
+    """The reviewer's argument against the AI's suggested verdict."""
+
+    argument: str = Field(min_length=1, max_length=MAX_PUSHBACK_ARGUMENT_CHARS)
+
+    @model_validator(mode="after")
+    def _clean(self) -> "VerdictPushbackRequest":
+        self.argument = " ".join(self.argument.split()).strip()
+        if not self.argument:
+            raise ValueError("argument cannot be empty")
+        return self
+
+
+class VerdictPushbackRead(BaseModel):
+    """One recorded push-back and the model's answer to it."""
+
+    id: int
+    argument: str
+    previous_verdict: str | None = None
+    previous_confidence: int | None = None
+    agrees: bool
+    verdict: str
+    confidence: int | None = None
+    response: str
+    created_at: str | None = None
+
+    @classmethod
+    def from_row(cls, row) -> "VerdictPushbackRead":
+        return cls(
+            id=row.id,
+            argument=row.argument,
+            previous_verdict=row.previous_verdict,
+            previous_confidence=row.previous_confidence,
+            agrees=row.agrees,
+            verdict=row.verdict,
+            confidence=row.confidence,
+            response=row.response,
+            created_at=iso_utc(row.created_at),
+        )
+
+
+class VerdictPushbackResponse(BaseModel):
+    pushback: VerdictPushbackRead
+    review: CodeReviewDetail
 
 
 class LessonApplyRequest(BaseModel):

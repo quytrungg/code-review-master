@@ -55,6 +55,29 @@ async def list_models(user: CurrentUser, db: Session = Depends(get_db)) -> Model
                         note=note or "OpenAI",
                     ),
                 )
+        elif key.provider == "opencode":
+            # OpenCode's catalogue needs the key (401 without one), so the probe is the listing:
+            # it reports both the models and why they are missing.
+            ok, detail, metadata = await llm_service.probe_openai(
+                key.api_key or "", base_url=key.effective_base_url, label="OpenCode"
+            )
+            names = list(metadata.get("models", [])) if ok and metadata else []
+            if not names and key.default_model:
+                names = [key.default_model]
+            if not names:
+                # Nothing came back: offer the static pair, unavailable, so the reason is visible.
+                names = [entry["id"] for entry in llm_service.OPENCODE_FALLBACK]
+            for name in names:
+                _add(
+                    models,
+                    ModelOption(
+                        id=f"{llm_service.OPENCODE}:{name}",
+                        label=name,
+                        provider=llm_service.OPENCODE,
+                        available=ok,
+                        note=note or ("OpenCode" if ok else detail),
+                    ),
+                )
         elif key.provider == "ollama_cloud":
             ok, detail, metadata = await llm_service.probe_ollama(
                 key.effective_base_url,

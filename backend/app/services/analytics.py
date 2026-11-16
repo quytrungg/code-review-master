@@ -40,7 +40,9 @@ from app.schemas.analytics import (
     PurposeUsage,
     QualitySummary,
 )
+from app.schemas.findings import RecurringFindingRead
 from app.schemas.review import ReviewUsage
+from app.services import finding_search
 
 BUDGET_WARN_PCT = 80.0
 BUDGET_OVER_PCT = 100.0
@@ -371,6 +373,20 @@ def summarise(db: Session, user_id: int, days: int) -> AnalyticsRead:
             pushback_rate=_rate(total_pushed, total_findings),
         ),
         budget=_budget(db, user_id, now),
+        recurring=[
+            RecurringFindingRead(
+                repo_full_name=row["repo_full_name"],
+                key=row["key"],
+                reviews=int(row["reviews"]),
+                findings=int(row["findings"]),
+                last_seen=(
+                    row["last_seen"].isoformat().replace("+00:00", "Z")
+                    if row["last_seen"] is not None
+                    else None
+                ),
+            )
+            for row in finding_search.recurring(db, user_id, days)
+        ],
     )
 
 

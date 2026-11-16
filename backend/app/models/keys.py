@@ -23,7 +23,9 @@ LLM_CLAUDE = "claude"
 LLM_OPENAI = "openai"
 LLM_OLLAMA_CLOUD = "ollama_cloud"
 LLM_OLLAMA_LOCAL = "ollama_local"
-LLM_PROVIDERS = (LLM_CLAUDE, LLM_OPENAI, LLM_OLLAMA_CLOUD, LLM_OLLAMA_LOCAL)
+# Hosted OpenCode Console inference (OpenAI-compatible, bearer key).
+LLM_OPENCODE = "opencode"
+LLM_PROVIDERS = (LLM_CLAUDE, LLM_OPENAI, LLM_OLLAMA_CLOUD, LLM_OLLAMA_LOCAL, LLM_OPENCODE)
 
 # Providers that need no secret (a local daemon is protected by the network, not a key).
 KEYLESS_LLM_PROVIDERS = (LLM_OLLAMA_LOCAL,)
@@ -38,6 +40,8 @@ LLM_DEFAULT_BASE_URLS = {
     LLM_OPENAI: "https://api.openai.com/v1",
     LLM_OLLAMA_CLOUD: "https://ollama.com",
     LLM_OLLAMA_LOCAL: "http://localhost:11434",
+    # OpenCode Go keys use `.../inference/go/openai/v1`; the base URL is editable per key.
+    LLM_OPENCODE: "https://opencode.ai/inference/openai/v1",
 }
 
 

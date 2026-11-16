@@ -4,6 +4,19 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# The local CLI-agent stores the evolve analysis can mine for correction evidence.
+EvolutionSessionSource = Literal["claude", "codex", "hermes"]
+
+
+class SessionSourceRead(BaseModel):
+    """One agent-session folder the browser may ask the analysis to mine."""
+
+    id: EvolutionSessionSource
+    label: str
+    path: str
+    available: bool = True
+    detail: str | None = None
+
 
 class FoundationRead(BaseModel):
     id: str
@@ -19,6 +32,8 @@ class SkillsResponse(BaseModel):
     # False on a read-only deployment (Vercel): the bundled library is the only source.
     uploads_enabled: bool = True
     foundations: list[FoundationRead] = Field(default_factory=list)
+    # Local CLI-agent session folders the evolve analysis can read on this machine.
+    session_sources: list[SessionSourceRead] = Field(default_factory=list)
 
 
 class SkillFileUploadResponse(BaseModel):
@@ -37,6 +52,8 @@ class EvolutionAnalyzeRequest(BaseModel):
     days: int = Field(default=30, ge=1, le=365)
     # The model that runs the meta-analysis, e.g. "claude:claude-sonnet-4-5-20250929".
     model: str = Field(min_length=1)
+    # Optionally add the last `days` of one local CLI-agent session store as evidence.
+    session_source: EvolutionSessionSource | None = None
 
 
 class EvolutionFileModification(BaseModel):
@@ -54,6 +71,10 @@ class EvolutionHistory(BaseModel):
     reviews: int = 0
     threads: int = 0
     interactions: int = 0
+    # Present when the operator also asked for a local agent session store.
+    session_source: EvolutionSessionSource | None = None
+    sessions: int = 0
+    exchanges: int = 0
 
 
 class EvolutionAnalysisResponse(BaseModel):

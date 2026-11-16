@@ -5,9 +5,12 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { CodeSnippetBox } from "@/components/CodeSnippetBox";
 import { CommentBox } from "@/components/CommentBox";
+import { ComparisonPanel } from "@/components/ComparisonPanel";
 import { IngestProgress } from "@/components/IngestProgress";
 import { PushBackLessonModal } from "@/components/PushBackLessonModal";
+import { VerdictPushBackModal } from "@/components/VerdictPushBackModal";
 import { ReviewHeader } from "@/components/ReviewHeader";
+import { SeenBefore } from "@/components/SeenBefore";
 import { SplitPane } from "@/components/SplitPane";
 import { StickyActionBar } from "@/components/StickyActionBar";
 import { ThreadFilterBar, type FilterCounts, type ThreadFilter } from "@/components/ThreadFilterBar";
@@ -42,6 +45,8 @@ export function ReviewDetailPage() {
   const [lessonsEnabled, setLessonsEnabled] = useState<boolean | null>(null);
   const [uploadsEnabled, setUploadsEnabled] = useState(false);
   const [pendingPushBack, setPendingPushBack] = useState<{ roundId: number; threadId: number } | null>(null);
+  // The verdict-level push-back: a comment box, then the model's answer.
+  const [verdictPushBackOpen, setVerdictPushBackOpen] = useState(false);
 
   const { drafts, setDraft, clearDrafts, pendingIds, pendingCount } = useReviewDrafts();
   const discussion = useDiscussionStream();
@@ -311,27 +316,32 @@ export function ReviewDetailPage() {
   }
 
   const threads = review.threads;
+  const aiCount = threads.filter((thread) => thread.origin !== "GITHUB_EXISTING").length;
   const counts: FilterCounts = {
     all: threads.length,
-    ai: threads.filter((thread) => thread.origin === "AI_GENERATED").length,
+    ai: aiCount,
     github: threads.filter((thread) => thread.origin === "GITHUB_EXISTING").length,
     needs: threads.filter((thread) => thread.thread_status === "needs_response").length,
   };
   const visibleThreads = threads.filter((thread) => {
-    if (filter === "ai") return thread.origin === "AI_GENERATED";
+    if (filter === "ai") return thread.origin !== "GITHUB_EXISTING";
     if (filter === "github") return thread.origin === "GITHUB_EXISTING";
     if (filter === "needs") return thread.thread_status === "needs_response";
     return true;
   });
   const pending = pendingApplyCount(threads);
-  // An approval can go out on its own; a comment review cannot.
-  const emptyApproval = pending.total === 0 && verdict === "APPROVE" && review.status !== "applied";
+  // An approval can go out on its own, even after this review published a COMMENT — the PR is the
+  // message. Only a review that already approved is refused.
+  const alreadyApproved = review.approval_published;
+  const emptyApproval = pending.total === 0 && verdict === "APPROVE" && !alreadyApproved;
   const applyLabel = emptyApproval ? "Approve on GitHub" : applyButtonLabel(pending);
   const applyDisabledReason =
     pending.total === 0 && !emptyApproval
-      ? review.status === "applied"
-        ? "Everything in this review is already on the pull request."
-        : "Accept a finding or reply before applying."
+      ? alreadyApproved
+        ? "This review already approved the pull request."
+        : review.status === "applied"
+          ? "Everything in this review is already on the pull request."
+          : "Accept a finding or reply before applying."
       : null;
   const threadOptions = threads.map((thread) => ({
     ordinal: thread.ordinal,
@@ -369,6 +379,12 @@ export function ReviewDetailPage() {
         error={review.error}
         notes={[review.notes, ...applyWarnings].filter(Boolean).join("\n")}
       />
+
+      <ComparisonPanel review={review} />
+
+      {selectedId !== null && review.threads.some((thread) => thread.id === selectedId) ? (
+        <SeenBefore reviewId={review.id} threadId={selectedId} />
+      ) : null}
 
       {review.status === "running" ? (
         <IngestProgress reviewId={review.id} onFinished={handleIngestFinished} />
@@ -438,7 +454,7 @@ export function ReviewDetailPage() {
         </>
       )}
 
-      {review.status !== "running" ? (
+      {review.status !== "running" && review.trigger !== "comparison" ? (
         <StickyActionBar
           pendingCount={pendingCount}
           verdict={verdict}
@@ -448,6 +464,9 @@ export function ReviewDetailPage() {
           aiNote={review.suggested_verdict_note}
           onUseAiVerdict={
             review.suggested_verdict ? () => setVerdict(review.suggested_verdict!) : undefined
+          }
+          onPushBack={
+            review.suggested_verdict ? () => setVerdictPushBackOpen(true) : undefined
           }
           onSubmit={() => submitDrafts()}
           onApply={() => void applyToGithub()}
@@ -464,6 +483,24 @@ export function ReviewDetailPage() {
           submitDisabledReason="Type a reply in any thread to enable bulk submit."
           error={actionError}
           notice={notice}
+        />
+      ) : null}
+
+      {verdictPushBackOpen && review ? (
+        <VerdictPushBackModal
+          review={review}
+          event={verdict}
+          onClose={(result) => {
+            setVerdictPushBackOpen(false);
+            if (!result) return;
+            setReview(result.review);
+            if (result.useVerdict) setVerdict(result.useVerdict);
+            setNotice(
+              result.useVerdict
+                ? "The AI changed its opinion — the review event is set to it."
+                : "The AI opinion was re-evaluated.",
+            );
+          }}
         />
       ) : null}
 

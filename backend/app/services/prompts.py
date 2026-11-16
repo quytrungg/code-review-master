@@ -115,11 +115,13 @@ def build_user_prompt(
     *,
     part: int | None = None,
     total: int | None = None,
+    already_reported: list[str] | None = None,
 ) -> UserPrompt:
     """Numbered diff with the change-request header, bounded by `max_chars`.
 
     `part`/`total` add the multi-pass framing: a part is told which files it owns and that other
-    parts cover the rest, so it does not speculate about code it was not given.
+    parts cover the rest, so it does not speculate about code it was not given. `already_reported`
+    carries the deterministic pre-pass hits as `path:line` so the model does not re-report them.
     """
     separator = "#" if getattr(pr, "vcs", "github") == "github" else "!"
     header = [
@@ -144,6 +146,13 @@ def build_user_prompt(
             f"NOTE: this is part {part} of {total} of a large pull request, split by file. Report "
             f"findings only in these files: {names}. Do not report on, or speculate about, files "
             "that are not shown here; other parts cover them."
+        )
+        header.append("")
+    if already_reported:
+        shown = ", ".join(already_reported[:20])
+        header.append(
+            f"NOTE: deterministic checks have already reported {len(already_reported)} finding(s) "
+            f"at these exact lines: {shown}. Do not repeat them; report only other defects."
         )
         header.append("")
 
@@ -274,8 +283,8 @@ def _verdict_excerpt(text: str) -> str:
     return body or "(empty)"
 
 
-def build_verdict_prompt(threads) -> str:
-    """Every thread's original finding and latest conclusion, for one verdict decision."""
+def _review_state_block(threads) -> str:
+    """Every thread's original finding and latest conclusion — the state both verdict passes read."""
     parts = [f"# Review state — {len(threads)} thread(s)", ""]
     for ordinal, thread in enumerate(threads[:MAX_VERDICT_THREADS], start=1):
         withdrawn = " (withdrawn during discussion)" if getattr(thread, "dropped", False) else ""
@@ -293,7 +302,53 @@ def build_verdict_prompt(threads) -> str:
     if len(threads) > MAX_VERDICT_THREADS:
         parts.append(f"({len(threads) - MAX_VERDICT_THREADS} further thread(s) omitted.)")
         parts.append("")
-    parts.append(VERDICT_CONTRACT)
+    return "\n".join(parts)
+
+
+def build_verdict_prompt(threads) -> str:
+    """Every thread's original finding and latest conclusion, for one verdict decision."""
+    return _review_state_block(threads) + "\n" + VERDICT_CONTRACT
+
+
+PUSHBACK_CONTRACT = """
+# Task
+
+You gave this review the verdict above. The reviewer disagrees and has explained why below.
+Re-read the review state and decide whether their argument changes your verdict.
+
+Return ONLY this JSON object:
+
+{"agrees": true | false, "verdict": "APPROVE" | "COMMENT" | "REQUEST_CHANGES",
+ "confidence": 0-100, "response": "two or three sentences, at most 80 words"}
+
+Rules:
+- `agrees` is true only when their argument actually changes your verdict. Courtesy is not
+  agreement, and neither is repeating their claim back to them.
+- `verdict` is the verdict you would publish now. It stays the same as your current verdict when you
+  disagree, and may move in either direction when you agree.
+- `confidence` is how sure you are of that verdict after considering the argument, 0-100.
+- `response` is addressed to the reviewer: name the point you accept, or the fact that still blocks.
+  No markdown, no line breaks, no restating their message.
+""".strip()
+
+
+def build_verdict_pushback_prompt(review, threads, argument: str) -> str:
+    """The review state plus both sides of the disagreement: the standing opinion and the argument."""
+    verdict = review.suggested_verdict or "(not recorded)"
+    confidence = (
+        f"{review.confidence_percentage}%" if review.confidence_percentage is not None else "unknown"
+    )
+    parts = [f"# Your current opinion — {verdict} (confidence {confidence})"]
+    note = getattr(review, "suggested_verdict_note", None)
+    if note:
+        parts.append(f"Your rationale: {_verdict_excerpt(note)}")
+    parts.append("")
+    parts.append(_review_state_block(threads))
+    parts.append("# The reviewer's push-back")
+    parts.append("")
+    parts.append(argument.strip())
+    parts.append("")
+    parts.append(PUSHBACK_CONTRACT)
     return "\n".join(parts)
 
 

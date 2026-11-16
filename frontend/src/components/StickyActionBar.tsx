@@ -23,6 +23,8 @@ export interface StickyActionBarProps {
   aiConfidence?: number | null;
   aiNote?: string | null;
   onUseAiVerdict?: () => void;
+  /** Opens the modal that puts the reviewer's argument to the model. */
+  onPushBack?: () => void;
   onSubmit: () => void;
   onApply: () => void;
   /** While streaming: progress instead of one indeterminate spinner, plus a working Stop. */
@@ -48,6 +50,7 @@ export function StickyActionBar({
   aiConfidence = null,
   aiNote = null,
   onUseAiVerdict,
+  onPushBack,
   onSubmit,
   onApply,
   submitProgress = null,
@@ -138,6 +141,16 @@ export function StickyActionBar({
               <p className="max-w-[320px] truncate text-[11px] text-inkMuted" title={aiNote}>
                 {aiNote}
               </p>
+            ) : null}
+            {onPushBack ? (
+              <button
+                type="button"
+                onClick={onPushBack}
+                disabled={applying}
+                className="text-[11px] text-inkMuted underline decoration-borderStrong underline-offset-2 hover:text-ink disabled:opacity-40"
+              >
+                Push back on this opinion
+              </button>
             ) : null}
           </div>
 

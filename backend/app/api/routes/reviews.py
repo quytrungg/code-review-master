@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +11,14 @@ from app.api.deps import CurrentUser, get_db
 from app.db.init_db import mark_stale_running_reviews
 from app.db.session import SessionLocal
 from app.models.review import CodeReview
+from app.schemas.comparison import (
+    CompareRequest,
+    ComparisonEstimate,
+    ComparisonItem,
+    ComparisonMatch,
+    ComparisonRead,
+    ComparisonSide,
+)
 from app.schemas.review import (
     ApplyRequest,
     ApplyResponse,
@@ -26,10 +34,14 @@ from app.schemas.review import (
     RoundDecisionRequest,
     RoundDecisionResponse,
     SyncResponse,
+    VerdictPushbackRead,
+    VerdictPushbackRequest,
+    VerdictPushbackResponse,
 )
 from app.schemas.watch import ReviewWatchRead
 from app.services import (
     analytics,
+    comparison,
     keys_service,
     lessons_service,
     settings_service,
@@ -39,9 +51,12 @@ from app.services import (
 )
 from app.services.apply_service import apply_review, decide_round
 from app.services.discussion import discuss_threads, prepare_discussion, stream_discussion
+from app.services.llm_service import LLMError
 from app.services.progress import bus
 from app.services.review_pipeline import PipelineError, create_running_review, schedule_ingest
+from app.services.verdict import VerdictError, push_back
 from app.services.skills_service import SkillError
+from app.models.watch import ReviewTrigger
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
 
@@ -252,6 +267,120 @@ async def decide_round_state(
     except PipelineError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     return RoundDecisionResponse(review=_detail(db, review), warnings=warnings)
+
+
+@router.post("/{review_id}/verdict/pushback", response_model=VerdictPushbackResponse)
+async def push_back_verdict(
+    review_id: int,
+    payload: VerdictPushbackRequest,
+    user: CurrentUser,
+    db: Session = Depends(get_db),
+) -> VerdictPushbackResponse:
+    """Put the reviewer's argument to the model; it either changes its opinion or holds it.
+
+    Nothing is published here and the apply gate is untouched: an agreeing answer only rewrites the
+    advisory `suggested_verdict`, which the reviewer still has to apply themselves.
+    """
+    review = _owned_review(db, user.id, review_id)
+    try:
+        row, review = await push_back(db, review, payload.argument)
+    except VerdictError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return VerdictPushbackResponse(
+        pushback=VerdictPushbackRead.from_row(row), review=_detail(db, review)
+    )
+
+
+@router.get("/{review_id}/verdict/pushbacks", response_model=list[VerdictPushbackRead])
+def list_verdict_pushbacks(
+    review_id: int, user: CurrentUser, db: Session = Depends(get_db)
+) -> list[VerdictPushbackRead]:
+    """Every push-back on this review, newest first, so the modal can show the exchange so far."""
+    review = _owned_review(db, user.id, review_id)
+    return [VerdictPushbackRead.from_row(row) for row in reversed(review.pushbacks)]
+
+
+@router.post("/{review_id}/compare", status_code=202, response_model=CreateReviewAccepted)
+async def compare_review(
+    review_id: int,
+    payload: CompareRequest,
+    user: CurrentUser,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> CreateReviewAccepted:
+    """Re-run the same pull request with a second model, linked to this review as its parent.
+
+    The sibling is pinned to the primary's commit (`ReviewTrigger.COMPARISON` in the pipeline), so
+    the two finding sets can be compared anchor-for-anchor. It is findings-only: the pipeline skips
+    the PR-comment import, and apply refuses it.
+    """
+    review = _owned_review(db, user.id, review_id)
+    if review.status == "running":
+        raise HTTPException(
+            status_code=409, detail="Wait for this review to finish before comparing models."
+        )
+    try:
+        sibling = create_running_review(
+            db,
+            user.id,
+            review.pr_url,
+            payload.model,
+            review.skill_foundation,
+            commit_id=review.commit_id,
+            parent_review_id=review.id,
+            trigger=ReviewTrigger.COMPARISON,
+        )
+    except PipelineError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    schedule_ingest(sibling.id, background)
+    return CreateReviewAccepted(
+        id=sibling.id, status=sibling.status, skill_foundation=sibling.skill_foundation
+    )
+
+
+def _comparison_pair(db: Session, user_id: int, review: CodeReview):
+    pair = comparison.find_pair(db, user_id, review)
+    if pair is None:
+        raise HTTPException(status_code=404, detail="This review has no model comparison.")
+    return pair
+
+
+@router.get("/{review_id}/comparison", response_model=ComparisonRead)
+def read_comparison(
+    review_id: int, user: CurrentUser, db: Session = Depends(get_db)
+) -> ComparisonRead:
+    """The merge view for either side of a comparison; three buckets and provenance per item."""
+    review = _owned_review(db, user.id, review_id)
+    pair = _comparison_pair(db, user.id, review)
+    merged = comparison.merge(pair.primary, pair.comparison)
+    return ComparisonRead(
+        primary=ComparisonSide(**merged["primary"]),
+        comparison=ComparisonSide(**merged["comparison"]),
+        both=[ComparisonMatch(**item) for item in merged["both"]],
+        primary_only=[ComparisonItem(**item) for item in merged["primary_only"]],
+        comparison_only=[ComparisonItem(**item) for item in merged["comparison_only"]],
+        line_tolerance=merged["line_tolerance"],
+    )
+
+
+@router.get("/{review_id}/comparison/estimate", response_model=ComparisonEstimate)
+def estimate_comparison(
+    review_id: int,
+    user: CurrentUser,
+    model: str = Query(min_length=1, max_length=200),
+    db: Session = Depends(get_db),
+) -> ComparisonEstimate:
+    """Cost of the second run, priced from the primary review's measured tokens."""
+    review = _owned_review(db, user.id, review_id)
+    source = review
+    if review.trigger == ReviewTrigger.COMPARISON:
+        source = _comparison_pair(db, user.id, review).primary
+    try:
+        estimate = comparison.estimate(db, source, model)
+    except LLMError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return ComparisonEstimate(**estimate)
 
 
 def _lesson_thread(db: Session, user_id: int, review_id: int, thread_id: int):

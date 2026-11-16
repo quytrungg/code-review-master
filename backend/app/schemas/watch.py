@@ -56,6 +56,11 @@ class WatchFailure(BaseModel):
     error: str | None = None
 
 
+class PolicyFailure(BaseModel):
+    policy_id: int
+    error: str | None = None
+
+
 class TickResultRead(BaseModel):
     checked: int = 0
     unchanged: int = 0
@@ -63,3 +68,7 @@ class TickResultRead(BaseModel):
     skipped: int = 0
     started: list[int] = Field(default_factory=list)
     failed: list[WatchFailure] = Field(default_factory=list)
+    # Standing policies evaluated on the same tick.
+    policy_started: list[int] = Field(default_factory=list)
+    policy_skipped: int = 0
+    policy_failed: list[PolicyFailure] = Field(default_factory=list)

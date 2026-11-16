@@ -1,7 +1,6 @@
 # INITIATIVES — what to build next
 
-Last updated: 2026-11-11 · Covers phases 1–33 (phases 21–33 shipped or in flight since the last
-update; initiative 5, streaming, was taken forward as phase 33).
+Last updated: 2026-11-12 · Covers phases 1–42 (initiatives 7–10 shipped as phases 39–42).
 
 This file is a backlog, not a plan. Each entry below is a candidate feature with enough evidence
 that the first question — *is this a real gap?* — is already answered. Per `AGENTS.md` §1, no
@@ -18,10 +17,10 @@ Ideas are ranked by **value ÷ effort**, not by how interesting they are to buil
 | 4 | ~~LLM call ledger and quality analytics~~ | Shipped in phase 22 — see §4 for the deviations | M | yes |
 | 5 | ~~Streaming replies, per-thread retry, cancel~~ | Shipped in phase 33 — see §5 for the deviations | L | no |
 | 6 | ~~Learn my standards: push-backs become skill rules~~ | Shipped in phase 36 — see §6 for the deviations (beta-gated by phase 35) | M | yes |
-| 7 | Deterministic pre-pass checks before the model | Secret and hygiene catches with zero tokens | S–M | no |
-| 8 | Standing review policies on the inbox | The queue stops needing clicks to move | M–L | yes |
-| 9 | Cross-review finding search and recurring issues | "We have flagged this three times before" | M | yes |
-| 10 | Side-by-side model comparison | Answers the folklore question with data | M | no |
+| 7 | ~~Deterministic pre-pass checks before the model~~ | Shipped in phase 39 — see §7 for the deviations | S–M | yes |
+| 8 | ~~Standing review policies on the inbox~~ | Shipped in phase 40 — see §8 for the deviations | M–L | yes |
+| 9 | ~~Cross-review finding search and recurring issues~~ | Shipped in phase 41 — see §9 for the deviations | M | yes |
+| 10 | ~~Side-by-side model comparison~~ | Shipped in phase 42 — see §10 for the deviations | M | no |
 
 ---
 
@@ -465,6 +464,14 @@ writes nothing.
 
 ## 7. Deterministic pre-pass checks before the model
 
+> Built as `docs/plans/phase_39_plan.md`. Deviations: enabling is per account only
+> (`settings.check_packs`) — a per-review override needs a `code_reviews` column, and the request
+> closes before ingest reads the row — so the initiative's "per review **or** globally" takes the
+> global branch. `origin` gained `CHECK`; **no** migration was needed for that column, but the
+> settings list is revision `0019`. There is no "ignore this pattern for this repo" list: the phase
+> 6 proposal queue it was meant to feed does not exist, so fixture/test path hints are the v1
+> false-positive control, and generic TODOs were left out as style rather than merge-blocking.
+
 **Problem.** The model is the *only* analysis layer — every finding costs a call, and the things a
 regex catches with absolute certainty are exactly where LLMs are weakest: an AWS key pasted into a
 fixture, a `.env` diff, a conflict marker, a `console.log` left in, `.skip()` appended to a test.
@@ -512,6 +519,14 @@ produces none; the ingestion note appears and the model does not duplicate the l
 ---
 
 ## 8. Standing review policies on the inbox
+
+> Built as `docs/plans/phase_40_plan.md`. Deviations from the sketch: the per-PR race guard is a
+> compare-and-set `cached_prs.policy_claim_at` taken before the review insert (not the phase 27
+> watch claim, which has no policy equivalent), and the open design decision was settled
+> **against auto-watching**: a policy starts the first review only, because a watch would keep
+> spending per push outside `max_active`, the only spend control this phase adds. `trigger='policy'`
+> and `code_reviews.policy_id` were both needed — the latter is how the cap is counted. GitLab is
+> out of scope because the inbox cache is GitHub-only.
 
 **Problem.** The pieces now exist independently but refuse to compose. The inbox (phase 28/31)
 discovers PRs waiting on the user; watches (phase 27) review *new pushes* — but only on PRs that
@@ -569,6 +584,13 @@ non-matching repo gets none; a PR already linked is untouched; two ticks racing 
 
 ## 9. Cross-review finding search and recurring-issue memory
 
+> Built as `docs/plans/phase_41_plan.md`. Deviation: no FTS5/`tsvector` index. The plan took the
+> lowest-common-denominator branch the entry allowed — a stored `norm_key` on `review_threads`,
+> backfilled by the revision, queried with `LIKE` and grouped in SQL — so one schema works on both
+> engines. The cost is no stemming and no relevance ranking; a reworded finding matches only when
+> its first twelve normalised words agree. "Seen before" lives at
+> `GET /api/findings/similar/{review_id}/{thread_id}` rather than under `/reviews/...`.
+
 **Problem.** Every review is an island. Summaries, file paths and discussion text live in
 `review_threads` and `thread_messages` per review, and `GET /api/reviews` is an unfiltered list —
 there is no search anywhere in the backend (verified: no `ilike`/`LIKE`/FTS in the routes). So the
@@ -619,6 +641,13 @@ leaving no orphaned FTS rows; another account's finding is a 404.
 ---
 
 ## 10. Side-by-side model comparison
+
+> Built as `docs/plans/phase_42_plan.md`. Deviations: the diff is not refetched at the pinned
+> commit (the provider diff endpoint returns the current head), so the sibling keeps the primary's
+> `commit_id` and warns when the head moved; storing diffs is a larger change and was not taken.
+> The merge window is **two lines** with a same-key-or-same-line rule. A comparison review is
+> findings-only: ingest skips the comment import and apply answers `409`, so nothing is published
+> from the second run. The inbox checkbox was dropped; the workspace button is the single entry.
 
 **Problem.** Phase 22 made model quality *measurable* (acceptance rate, push-back rate, latency,
 cost per model) but only *passively* — the numbers accrue from whatever reviews happened to use

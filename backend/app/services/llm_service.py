@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -20,24 +21,35 @@ OPENAI = "openai"
 OLLAMA_CLOUD = "ollama-cloud"
 # Ollama running on the operator's machine (no authentication).
 OLLAMA_LOCAL = "ollama-local"
+# OpenCode Console inference (bearer API key), served as an OpenAI-compatible endpoint. OpenCode
+# also serves Anthropic- and Gemini-shaped routes and translates between them, so the Chat
+# Completions transport reaches every model in its catalogue.
+OPENCODE = "opencode"
+OPENCODE_URL = "https://opencode.ai/inference/openai/v1"
+# The OpenCode relay demands x-opencode-session and refuses requests without it (HTTP 400
+# MissingSessionID) — the Go subscription relay in particular. One id per process is stable enough
+# for the relay's routing/affinity and carries no account or prompt data; Zen accepts and ignores it.
+OPENCODE_SESSION_ID = uuid.uuid4().hex
 # Pre-Phase-6 ids: "ollama:<tag>" meant the local daemon. It now resolves to the hosted API,
 # because cloud is the default; local models are addressed as "ollama-local:<tag>".
 LEGACY_OLLAMA = "ollama"
 
 OLLAMA_PROVIDERS = (OLLAMA_CLOUD, OLLAMA_LOCAL)
-MODEL_PROVIDERS = (CLAUDE, OPENAI, *OLLAMA_PROVIDERS)
+MODEL_PROVIDERS = (CLAUDE, OPENAI, OPENCODE, *OLLAMA_PROVIDERS)
 
 # Model-id prefix ↔ database provider name (`llm_keys.provider`).
 DB_PROVIDER = {
     CLAUDE: "claude",
     OPENAI: "openai",
+    OPENCODE: "opencode",
     OLLAMA_CLOUD: "ollama_cloud",
     OLLAMA_LOCAL: "ollama_local",
 }
 MODEL_PROVIDER = {value: key for key, value in DB_PROVIDER.items()}
 
 MODEL_ID_HINT = (
-    "Expected 'claude:<model>', 'openai:<model>', 'ollama-cloud:<tag>' or 'ollama-local:<tag>'."
+    "Expected 'claude:<model>', 'openai:<model>', 'opencode:<model>', 'ollama-cloud:<tag>' or "
+    "'ollama-local:<tag>'."
 )
 
 CLAUDE_FALLBACK = [
@@ -48,6 +60,13 @@ CLAUDE_FALLBACK = [
 OPENAI_FALLBACK = [
     {"id": "gpt-5-codex", "label": "GPT-5 Codex"},
     {"id": "gpt-4.1", "label": "GPT-4.1"},
+]
+
+# Shown only when the OpenCode catalogue cannot be fetched; every id was in the live list on
+# 2026-11-12. A stored `default_model` still wins over these.
+OPENCODE_FALLBACK = [
+    {"id": "kimi-k2.6", "label": "kimi-k2.6"},
+    {"id": "glm-5.3", "label": "glm-5.3"},
 ]
 
 FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -188,6 +207,14 @@ def resolve_endpoint(credentials: LLMCredentials, model: ModelRef) -> tuple[str,
             raise LLMError("No OpenAI API key configured. Add one in Settings.")
         base = (credentials.base_url or config.openai_base_url).rstrip("/")
         return base, {"Authorization": f"Bearer {credentials.api_key}"}
+    if model.provider == OPENCODE:
+        if not credentials.api_key:
+            raise LLMError("No OpenCode API key configured. Add one in Settings.")
+        base = (credentials.base_url or OPENCODE_URL).rstrip("/")
+        return base, {
+            "Authorization": f"Bearer {credentials.api_key}",
+            "x-opencode-session": OPENCODE_SESSION_ID,
+        }
     if model.provider == CLAUDE:
         if not credentials.api_key:
             raise LLMError("No Claude API key configured. Add one in Settings.")
@@ -245,7 +272,7 @@ async def probe_claude(
 
 
 async def probe_openai(
-    api_key: str, base_url: str | None = None, timeout: float = 10.0
+    api_key: str, base_url: str | None = None, timeout: float = 10.0, label: str = "OpenAI"
 ) -> tuple[bool, str, dict | None]:
     """Verify an OpenAI-compatible key against `GET /models`."""
     base = (base_url or "https://api.openai.com/v1").rstrip("/")
@@ -255,12 +282,12 @@ async def probe_openai(
                 f"{base}/models", headers={"Authorization": f"Bearer {api_key}"}
             )
     except httpx.HTTPError as exc:
-        return False, f"Could not reach OpenAI at {base}: {exc.__class__.__name__}", None
+        return False, f"Could not reach {label} at {base}: {exc.__class__.__name__}", None
 
     if response.status_code in (401, 403):
-        return False, "OpenAI rejected the API key", None
+        return False, f"{label} rejected the API key", None
     if response.status_code != 200:
-        return False, f"OpenAI returned HTTP {response.status_code}", None
+        return False, f"{label} returned HTTP {response.status_code}", None
     try:
         models = [entry.get("id", "") for entry in response.json().get("data", [])]
     except (ValueError, AttributeError):
@@ -353,9 +380,17 @@ async def generate(
                 credentials, model.name, system_prompt, user_prompt, config.llm_max_tokens
             )
         else:
-            if model.provider == OPENAI:
+            if model.provider in (OPENAI, OPENCODE):
                 result = await _generate_openai(
-                    base_url, headers, model.name, system_prompt, user_prompt, config, json_mode
+                    base_url,
+                    headers,
+                    model.name,
+                    system_prompt,
+                    user_prompt,
+                    config,
+                    json_mode,
+                    provider=model.provider,
+                    label="OpenAI" if model.provider == OPENAI else "OpenCode",
                 )
             else:
                 result = await _generate_ollama(
@@ -448,7 +483,11 @@ async def _generate_openai(
     user_prompt: str,
     config,
     json_mode: bool = False,
+    *,
+    provider: str = OPENAI,
+    label: str = "OpenAI",
 ) -> LLMResult:
+    """Chat Completions call; `provider`/`label` name the transport for the ledger and errors."""
     payload: dict = {
         "model": name,
         "temperature": 0,
@@ -466,20 +505,20 @@ async def _generate_openai(
         async with httpx.AsyncClient(timeout=config.llm_timeout_s) as client:
             response = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
     except httpx.HTTPError as exc:
-        raise LLMError(f"Could not reach OpenAI at {base_url}: {exc.__class__.__name__}") from exc
+        raise LLMError(f"Could not reach {label} at {base_url}: {exc.__class__.__name__}") from exc
 
     if response.status_code in (401, 403):
-        raise LLMError("OpenAI rejected the API key. Check it in Settings.")
+        raise LLMError(f"{label} rejected the API key. Check it in Settings.")
     if response.status_code == 404:
-        raise LLMError(f"OpenAI does not have the model '{name}'. Check the model name.")
+        raise LLMError(f"{label} does not have the model '{name}'. Check the model name.")
     if response.status_code != 200:
-        raise LLMError(f"OpenAI returned HTTP {response.status_code}: {response.text[:300]}")
+        raise LLMError(f"{label} returned HTTP {response.status_code}: {response.text[:300]}")
 
     try:
         body = response.json()
         text = body["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError) as exc:
-        raise LLMError("OpenAI returned an unexpected response shape") from exc
+        raise LLMError(f"{label} returned an unexpected response shape") from exc
 
     prompt_tokens, completion_tokens = openai_usage(body)
     return LLMResult(
@@ -487,7 +526,7 @@ async def _generate_openai(
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         latency_ms=_elapsed_ms(started),
-        provider=OPENAI,
+        provider=provider,
         model=name,
     )
 
@@ -583,9 +622,17 @@ async def stream(
                 credentials, model.name, system_prompt, user_prompt, config.llm_max_tokens,
                 on_delta,
             )
-        elif model.provider == OPENAI:
+        elif model.provider in (OPENAI, OPENCODE):
             result = await _stream_openai(
-                base_url, headers, model.name, system_prompt, user_prompt, config, on_delta
+                base_url,
+                headers,
+                model.name,
+                system_prompt,
+                user_prompt,
+                config,
+                on_delta,
+                provider=model.provider,
+                label="OpenAI" if model.provider == OPENAI else "OpenCode",
             )
         else:
             result = await _stream_ollama(
@@ -689,6 +736,9 @@ async def _stream_openai(
     user_prompt: str,
     config,
     on_delta: Callable[[str], None],
+    *,
+    provider: str = OPENAI,
+    label: str = "OpenAI",
 ) -> LLMResult:
     """OpenAI SSE stream: `data:` chunks, usage on the terminal frame, `data: [DONE]` ends."""
     payload: dict = {
@@ -714,15 +764,15 @@ async def _stream_openai(
                 "POST", f"{base_url}/chat/completions", json=payload, headers=headers
             ) as response:
                 if response.status_code in (401, 403):
-                    raise LLMError("OpenAI rejected the API key. Check it in Settings.")
+                    raise LLMError(f"{label} rejected the API key. Check it in Settings.")
                 if response.status_code == 404:
                     raise LLMError(
-                        f"OpenAI does not have the model '{name}'. Check the model name."
+                        f"{label} does not have the model '{name}'. Check the model name."
                     )
                 if response.status_code != 200:
                     await response.aread()
                     raise LLMError(
-                        f"OpenAI returned HTTP {response.status_code}: {response.text[:300]}"
+                        f"{label} returned HTTP {response.status_code}: {response.text[:300]}"
                     )
                 async for line in response.aiter_lines():
                     line = line.strip()
@@ -734,7 +784,7 @@ async def _stream_openai(
                     try:
                         body = json.loads(data)
                     except ValueError as exc:
-                        raise LLMError("OpenAI returned an unexpected response shape") from exc
+                        raise LLMError(f"{label} returned an unexpected response shape") from exc
                     choices = body.get("choices") or []
                     if choices:
                         chunk = (choices[0].get("delta") or {}).get("content") or ""
@@ -744,14 +794,14 @@ async def _stream_openai(
                     if body.get("usage"):
                         prompt_tokens, completion_tokens = openai_usage(body)
     except httpx.HTTPError as exc:
-        raise LLMError(f"Could not reach OpenAI at {base_url}: {exc.__class__.__name__}") from exc
+        raise LLMError(f"Could not reach {label} at {base_url}: {exc.__class__.__name__}") from exc
 
     return LLMResult(
         text="".join(parts),
         prompt_tokens=prompt_tokens,
         completion_tokens=completion_tokens,
         latency_ms=_elapsed_ms(started),
-        provider=OPENAI,
+        provider=provider,
         model=name,
     )
 

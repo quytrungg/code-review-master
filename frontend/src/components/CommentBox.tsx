@@ -116,6 +116,7 @@ export function CommentBox({
     ? filterOptions(threadOptions, mention.query, displayOrdinal)
     : [];
   const isGithub = thread.origin === "GITHUB_EXISTING";
+  const isCheck = thread.origin === "CHECK";
 
   function handleDraftChange(event: React.ChangeEvent<HTMLTextAreaElement>) {
     const value = event.target.value;
@@ -299,8 +300,13 @@ export function CommentBox({
       )}
     >
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
-        <Badge tone={isGithub ? "neutral" : "accent"}>
-          {isGithub ? "🐙 GitHub Discussion" : "🤖 AI Finding"} #{displayOrdinal}
+        <Badge tone={isGithub ? "neutral" : isCheck ? "warning" : "accent"}>
+          {isGithub
+            ? "🐙 GitHub Discussion"
+            : isCheck
+              ? "🛡 Deterministic check"
+              : "🤖 AI Finding"}{" "}
+          #{displayOrdinal}
         </Badge>
         <span className="truncate font-mono text-xs text-inkMuted" title={thread.file_path}>
           {thread.file_path}:{thread.line_number}

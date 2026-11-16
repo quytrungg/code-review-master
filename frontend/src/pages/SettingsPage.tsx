@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { Cpu, FlaskConical, Github, PlugZap, RefreshCw } from "lucide-react";
+import { Cpu, FlaskConical, Github, PlugZap, RefreshCw, ShieldCheck } from "lucide-react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { LLMKeys, VersionControlKeys } from "@/components/KeyManager";
+import { PoliciesPanel } from "@/components/PoliciesPanel";
 import { useSettings } from "@/context/SettingsContext";
 import { api, ApiError } from "@/services/api";
 import type {
   BetaFeature,
+  CheckPack,
   ConnectionResult,
   LLMKey,
   LLMKeyCreate,
@@ -23,6 +25,7 @@ export function SettingsPage() {
   const [testing, setTesting] = useState(false);
   const [results, setResults] = useState<ConnectionResult[]>([]);
   const [betaPending, setBetaPending] = useState<string | null>(null);
+  const [checkPending, setCheckPending] = useState<string | null>(null);
 
   const loadKeys = useCallback(async () => {
     setLoading(true);
@@ -114,6 +117,24 @@ export function SettingsPage() {
     }
   }
 
+  // Pack toggles send the full list, matching the PUT contract's full-list replace. Off is the
+  // default: an account that never visits this card runs no extra patterns.
+  async function toggleCheck(pack: CheckPack) {
+    if (!settings || checkPending) return;
+    const selected = new Set(settings.check_packs);
+    if (selected.has(pack.id)) selected.delete(pack.id);
+    else selected.add(pack.id);
+    setCheckPending(pack.id);
+    setError(null);
+    try {
+      apply(await api.setCheckPacks([...selected]));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save the check packs");
+    } finally {
+      setCheckPending(null);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <header className="space-y-1">
@@ -157,7 +178,7 @@ export function SettingsPage() {
         <CardHeader
           icon={<Cpu className="h-4 w-4" />}
           title="Model providers"
-          description="Claude, OpenAI/Codex, Ollama Cloud or a local Ollama daemon. Several can coexist."
+          description="Claude, OpenAI/Codex, OpenCode, Ollama Cloud or a local Ollama daemon. Several can coexist."
         />
         <CardBody>
           <LLMKeys
@@ -249,6 +270,52 @@ export function SettingsPage() {
           </CardBody>
         </Card>
       ) : null}
+      {settings && settings.check_pack_registry.length > 0 ? (
+        <Card>
+          <CardHeader
+            icon={<ShieldCheck className="h-4 w-4" />}
+            title="Deterministic checks"
+            description="Pattern checks that run before the model, at zero tokens. Off unless you turn one on."
+          />
+          <CardBody>
+            <ul className="space-y-3">
+              {settings.check_pack_registry.map((pack) => {
+                const enabled = settings.check_packs.includes(pack.id);
+                const busy = checkPending === pack.id;
+                return (
+                  <li key={pack.id} className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-medium text-ink">{pack.label}</p>
+                      <p className="text-xs text-inkMuted">{pack.description}</p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={enabled}
+                      aria-label={pack.label}
+                      disabled={busy || checkPending !== null}
+                      onClick={() => void toggleCheck(pack)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors ${
+                        enabled
+                          ? "border-success/50 bg-success/30"
+                          : "border-inkMuted/30 bg-inkMuted/10"
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 rounded-full transition-transform ${
+                          enabled ? "translate-x-[18px] bg-success" : "translate-x-[3px] bg-inkMuted"
+                        }`}
+                      />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      <PoliciesPanel />
     </div>
   );
 }

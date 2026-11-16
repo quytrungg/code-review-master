@@ -11,14 +11,19 @@ keys in `providers-and-keys.md`, data safety in `database.md`, PII in `privacy.m
 
 `vcs` (fetch/publish dispatch by host) · `github_service` · `gitlab_service` · `keys_service` ·
 `diff_parser` · `skill_loader` · `skills_service` · `prompts` · `llm_service` · `review_pipeline` ·
-`review_units` (packs a large diff into per-file parts) · `watch_service` (watches, ticks,
-delta reviews) · `thread_sync` · `discussion` ·
-`references` (`#N`) · `summarise` · `verdict` · `apply_service` · `progress` ·
+`review_units` (packs a large diff into per-file parts) · `checks_service` (deterministic pre-pass
+packs: data-driven rules, anchored through the pipeline) · `watch_service` (watches, ticks,
+delta reviews) · `policy_service` (standing policies evaluated on the watch tick) · `thread_sync` ·
+`discussion` · `references` (`#N`) · `summarise` · `verdict` · `apply_service` · `progress` ·
 `auth_service` · `secrets`, `settings_service` · `ledger` (one `llm_calls` row per call, own
 session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line) ·
+`finding_search` (normalised finding key, cross-review search, recurring groups) · `comparison`
+(two reviews of one diff: merge buckets and the second run's estimate) ·
 `github_inbox_service` (PR inbox: search-based discovery, turn-taking detection, quick reviews,
 comment polish) · `skill_analyzer_service` (skill evolution: aggregates the review history,
-asks a model to propose guideline edits, validates them against the filesystem).
+asks a model to propose guideline edits, validates them against the filesystem) ·
+`agent_sessions_service` (the evolve analysis' optional local agent session stores: read-only
+readers for Claude Code, Codex and Hermes, correction scoring, and the prompt excerpt).
 
 ## Routes and errors
 
@@ -35,7 +40,8 @@ asks a model to propose guideline edits, validates them against the filesystem).
   Another account's row is a `404`. Public routes belong only to `/api/auth/*`, `/api/health` and
   `POST /api/watches/tick` — the last because a cron job cannot hold a session cookie: it
   authenticates with `WATCH_TICK_SECRET` (`hmac.compare_digest`, `503` when the secret is unset) and
-  must never be moved behind or in front of the session dependency by accident.
+  must never be moved behind or in front of the session dependency by accident. That tick also
+  evaluates standing policies, so it is the only public path that can start a model call.
 - **A new service module** is added to the roster above in the same change.
 - **Serverless skills are read-only** — `skills_service.require_writable()` raises
   `SkillError(..., 403)`, `GET /api/skills` reports `uploads_enabled: false`, and the UI hides write

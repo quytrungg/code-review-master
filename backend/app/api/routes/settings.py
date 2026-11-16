@@ -11,6 +11,7 @@ from app.schemas.settings import (
     SettingsRead,
     SettingsUpdate,
 )
+from app.services import checks_service
 from app.services import keys_service
 from app.services import settings_service
 from app.services.keys_service import KeyError
@@ -86,6 +87,19 @@ def update_settings(
             row = get_or_create(db, user.id)
             row.beta_features = dict(payload.beta_features)
             db.commit()
+    # Deterministic checks: a full-list replace, same absent/null semantics as the flags.
+    if "check_packs" in fields:
+        selected = list(payload.check_packs or [])
+        unknown = [pack for pack in selected if pack not in checks_service.PACK_IDS]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown check pack: {', '.join(sorted(unknown))}",
+            )
+        row = get_or_create(db, user.id)
+        # Registry order, no duplicates: the stored list is what runs, so normalise it here.
+        row.check_packs = [pack.id for pack in checks_service.enabled_packs(selected)]
+        db.commit()
     return _read(db, user.id)
 
 

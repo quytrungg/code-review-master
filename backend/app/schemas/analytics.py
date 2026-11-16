@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from app.schemas.findings import RecurringFindingRead
+
 
 class AnalyticsTotals(BaseModel):
     calls: int = 0
@@ -86,3 +88,5 @@ class AnalyticsRead(BaseModel):
     by_purpose: list[PurposeUsage]
     quality: QualitySummary
     budget: BudgetStatus
+    # Keys seen in more than one review in the window, grouped in SQL (phase 41).
+    recurring: list[RecurringFindingRead] = []

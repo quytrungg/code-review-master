@@ -11,6 +11,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   gitlab: "GitLab",
   claude: "Claude",
   openai: "OpenAI / Codex",
+  opencode: "OpenCode",
   ollama_cloud: "Ollama Cloud",
   ollama_local: "Ollama (local)",
 };
@@ -23,6 +24,7 @@ const VCS_OPTIONS = [
 const LLM_OPTIONS = [
   { value: "claude", label: "Claude", needsSecret: true, needsModel: true },
   { value: "openai", label: "OpenAI / Codex", needsSecret: true, needsModel: true },
+  { value: "opencode", label: "OpenCode", needsSecret: true, needsModel: true },
   { value: "ollama_cloud", label: "Ollama Cloud", needsSecret: true, needsModel: true },
   { value: "ollama_local", label: "Ollama (local)", needsSecret: false, needsModel: true },
 ];
@@ -343,9 +345,11 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
                   ? "http://localhost:11434"
                   : provider === "openai"
                     ? "https://api.openai.com/v1"
-                    : provider === "ollama_cloud"
-                      ? "https://ollama.com"
-                      : "https://api.anthropic.com"
+                    : provider === "opencode"
+                      ? "https://opencode.ai/inference/openai/v1"
+                      : provider === "ollama_cloud"
+                        ? "https://ollama.com"
+                        : "https://api.anthropic.com"
               }
             />
           </div>

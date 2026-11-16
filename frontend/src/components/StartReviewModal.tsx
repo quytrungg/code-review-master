@@ -8,6 +8,7 @@ import type { CachedPR, Foundation, ModelOption } from "@/types";
 const PROVIDER_LABEL: Record<ModelOption["provider"], string> = {
   claude: "claude",
   openai: "openai",
+  opencode: "opencode",
   "ollama-cloud": "ollama cloud",
   "ollama-local": "local",
 };

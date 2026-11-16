@@ -9,6 +9,263 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 49 — Evolve dialog offers review history only — 2026-11-14
+
+Plan: `docs/plans/phase_49_plan.md`. No migration; no API change (the dialog simply stops sending
+an optional field).
+
+### Changed
+
+- **The evolve start dialog asks for two things**: the skill foundation and the model. The evidence
+  is always the last 30 days of review history — past reviews and the corrections in their comment
+  threads — so the run behaves identically locally and on a hosted deployment.
+- `POST /api/skills/{foundation}/analyze-history` from the UI now sends `{days, model}` only;
+  `session_source` keeps its server-side default of `null`, which is the review-history-only path.
+- README describes the dialog as review-history only.
+
+### Removed
+
+- **The Agent session folder select** in the dialog, with its availability list and hint copy, and
+  the session stage in the analysis progress list.
+
+Backend session discovery (`GET /api/skills` → `session_sources`, the `session_source` body field,
+`agent_sessions_service`, `tests/test_agent_sessions.py`) is intentionally left in place and stays
+covered by the suite; deleting it is a separate decision.
+
+---
+
+## Phase 48 — Evolve from local agent sessions behind a dialog — 2026-11-14
+
+Plan: `docs/plans/phase_48_plan.md`. No migration; `GET /api/skills` and `analyze-history` gain
+additive fields.
+
+### Added
+
+- **An agent session source for skill evolution.** The start dialog can add the last 30 days of one
+  local CLI-agent store to the evidence: `~/.claude/projects` (Claude Code JSONL),
+  `~/.codex/sessions` (Codex JSONL) or `~/.hermes/state.db` (Hermes SQLite, opened read-only).
+  Developer corrections are excerpted and scored; injected system turns, role prompts and a
+  session's opening task are filtered out before anything reaches the prompt.
+- **`GET /api/skills` reports `session_sources`** with each folder's display path and whether it
+  exists, so the dialog disables a store this machine does not have.
+- **`analyze-history` accepts `session_source`** and returns `history.session_source`, `sessions`
+  and `exchanges`. A missing folder is a warning, never a failed analysis.
+- Environment overrides: `CLAUDE_SESSIONS_DIR`, `CODEX_SESSIONS_DIR`, `HERMES_STATE_DB`, plus the
+  scan caps `AGENT_SESSION_MAX_FILES`, `AGENT_SESSION_FILE_MAX_BYTES`, `AGENT_SESSION_MAX_MESSAGES`
+  and `AGENT_SESSION_MAX_CHARS`.
+
+### Changed
+
+- **Evolve is a dialog, not a card.** **Evolve from review history** sits in the Skills page header;
+  opening it mounts the foundation, model and session-folder selectors, and starting closes the
+  dialog into the existing progress panel.
+- The evolution workbench header reports the chosen session source and its counts.
+
+---
+
+## Phase 47 — OpenCode Go keys reach the Go relay — 2026-11-13
+
+Plan: `docs/plans/phase_47_plan.md`. No migration; no API change.
+
+### Fixed
+
+- **`x-opencode-session` on every OpenCode call.** The relay rejects requests without it
+  (`HTTP 400 MissingSessionID`) and the Go subscription relay is strict about it; Zen accepts and
+  ignores it. The adapter sends one id per process, so a worker's calls keep a stable route.
+- **A Go key now calls the Go base URL.** The key row carries
+  `https://opencode.ai/inference/go/openai/v1`; without the override a Go key lands on the Zen host
+  and fails `HTTP 402 Insufficient balance` — the error that named OpenCode but not the cause.
+
+---
+
+## Phase 46 — Reviews page: two dialogs and a paged history — 2026-11-12
+
+Plan: `docs/plans/phase_46_plan.md`. No migration; no API change.
+
+### Changed
+
+- **The new-review form is a dialog.** The card that sat above the history is gone; **New code
+  review** in the page header (left of **Refresh**) opens it. Same fields, same catalog load, and
+  **Start review** still navigates straight to the workspace.
+- **Finding search is a dialog.** The magnifier button beside **Refresh** opens it; closing unmounts
+  the form, so reopening starts from an empty field instead of a stale result set. The dialog asks for
+  `limit=50` instead of 20, and still says when the total exceeds what it shows.
+- **Review history paginates in the browser.** 10 rows by default, 10/20/50/100 per page, with a
+  "showing a–b of n" range and previous/next that disable at the ends. The page index is clamped to
+  the row count, so a refresh that shrinks the list — or a smaller page size — never lands on an
+  empty page. `GET /api/reviews` is unchanged: the whole list arrives in one call and is sliced
+  client-side.
+
+---
+
+## Phase 45 — Approve after commenting — 2026-11-12
+
+Plan: `docs/plans/phase_45_plan.md`. Migration `0023_approval_published`.
+
+### Fixed
+
+- **An applied review can approve the pull request.** Phase 23 treated `status = applied` as "nothing
+  left to publish", so a review that had gone out as a `COMMENT` could never send an approval — even
+  after the discussion moved the AI opinion to `APPROVE`. An approval is a state change on the PR, not
+  pending content: it is now refused only when this review already approved.
+- **`code_reviews.approval_published`** records that the publish call carried `event = APPROVE`.
+  `verdict` could not answer it: it stores the last apply's event, and a replies-only apply sets it
+  without publishing a review. The migration backfills the one shape the old code could approve in
+  (review URL, `verdict = 'APPROVE'`, no published AI round 1).
+- **The workspace button.** "Approve on GitHub" now appears on an applied review whose last published
+  event was not an approval; when it has already approved, the button is disabled with "This review
+  already approved the pull request." instead of the generic "Everything applied".
+
+### Changed
+
+- A second bare approval is `409` with its own message; `COMMENT`/`REQUEST_CHANGES` with nothing pending
+  keep their old errors.
+
+---
+
+## Phase 44 — Push back on the AI verdict — 2026-11-12
+
+Plan: `docs/plans/phase_44_plan.md`. Migration `0022_verdict_pushbacks`.
+
+### Added
+
+- **Push back on the AI opinion.** Next to the suggested verdict's confidence, "Push back on this
+  opinion" opens a comment box. The argument goes to the model with the same review state it judged,
+  and it answers whether that changes its verdict.
+- **Adopt or hold.** An agreeing answer rewrites `suggested_verdict`, its confidence and its note,
+  and the modal offers "Use Comment/Approve/…" to set the review event; a disagreeing answer leaves
+  the opinion standing and records why. Publishing is untouched — the reviewer still applies.
+- **`GET /api/reviews/{id}/verdict/pushbacks`** returns the exchange history, newest first, shown in
+  the modal so the argument over an opinion is auditable.
+- **Its own ledger purpose.** A push-back call records `purpose = "pushback"` in `llm_calls`
+  (added to `LLMPurpose`), so contested opinions are visible in Analytics instead of hiding inside
+  `verdict` spend.
+
+### Changed
+
+- `verdict._ask` and `_ask_document` split: the advisory discussion-time re-evaluation still swallows
+  a missing key or a failed call, while the push-back route reports it (`422` for a missing key,
+  `502` for a failed or unreadable answer) and writes nothing.
+
+---
+
+## Phase 43 — OpenCode as a model provider — 2026-11-12
+
+Plan: `docs/plans/phase_43_plan.md`. No migration: `llm_keys.provider` is a `String(16)` and
+`opencode` is just another value in it.
+
+### Added
+
+- **`opencode` provider.** Add an OpenCode Console API key in Settings (`opencode.ai/inference`),
+  optionally overriding the base URL for an OpenCode Go subscription. Models appear in the review
+  picker as `opencode:<model>`, next to Claude, OpenAI/Codex, Ollama Cloud and a local daemon.
+- **OpenCode reuses the Chat Completions transport.** OpenCode serves OpenAI-, Anthropic- and
+  Gemini-shaped routes and translates between them, so one adapter reaches its whole catalogue;
+  errors and the `llm_calls` ledger name OpenCode, not OpenAI.
+- **Model discovery.** `GET /api/models` lists the OpenCode catalogue through the key probe, so an
+  invalid or unreachable key still shows its models — marked unavailable, with the reason the
+  provider gave.
+
+### Changed
+
+- The OpenAI adapter takes `provider`/`label` parameters, so a second OpenAI-compatible host no
+  longer reports itself as OpenAI.
+
+---
+
+## Phase 42 — Side-by-side model comparison — 2026-11-12
+
+Plan: `docs/plans/phase_42_plan.md`. No migration; `ReviewTrigger.COMPARISON` reuses the phase 27
+columns.
+
+### Added
+
+- **`POST /api/reviews/{id}/compare`** creates a sibling review of the same PR, pinned to the
+  primary's commit, with the primary as its parent. Ingest skips the GitHub-comment import, so the
+  second run is findings-only and does not duplicate threads.
+- **`GET /api/reviews/{id}/comparison`** merges the two finding sets into `both`,
+  `primary_only`, `comparison_only`: same file, at most two lines apart, and either the same
+  normalised key or the identical line.
+- **`GET /api/reviews/{id}/comparison/estimate?model=`** prices the second run from the primary's
+  measured tokens and the phase 22 price table, labelled as an estimate.
+- **Workspace UI.** "Compare with…" with a model picker and the estimate before starting; either
+  side of a pair shows the merge view. A comparison review has no apply bar.
+
+### Changed
+
+- **Comparison reviews are read-only.** `POST /apply` on one is a `409`; accept and apply the
+  primary review instead. The pipeline keeps the pinned commit and warns when the PR head moved.
+
+---
+
+## Phase 41 — Cross-review finding search and recurring issues — 2026-11-12
+
+Plan: `docs/plans/phase_41_plan.md`. Migration `0021_thread_norm_key`.
+
+### Added
+
+- **`review_threads.norm_key`**, a severity-stripped, lower-cased 12-word key computed at ingest
+  and backfilled for existing AI/CHECK threads by the migration.
+- **`GET /api/findings/search?q=&repo=&path=&since=&limit=`** searches the key and assistant text
+  across the account's reviews. `GET /api/findings/similar/{review_id}/{thread_id}` returns prior
+  matches in the same repository with an `accepted` flag.
+- **Dashboard search panel**, a "seen before" section in the workspace when a finding is selected,
+  and a **Recurring findings** panel on Analytics (`GET /api/analytics` gains `recurring`).
+
+### Changed
+
+- **Search is portable on purpose.** A stored key plus `LIKE` instead of SQLite FTS5 / Postgres
+  `tsvector`: the two engines tokenise differently, and one index that works on both is worth more
+  here than stemming. Copy says "similar", never "duplicate".
+
+---
+
+## Phase 40 — Standing review policies — 2026-11-12
+
+Plan: `docs/plans/phase_40_plan.md`. Migration `0020_review_policies`.
+
+### Added
+
+- **`review_policies`**: repo glob, involvement, model, foundation, `max_active`, enabled. CRUD at
+  `/api/policies`.
+- **Policy evaluation on the existing watch tick** (local loop and `POST /api/watches/tick`). A
+  matching `needs_review` inbox row with no linked review gets a review created with
+  `trigger='policy'` and `policy_id` stamped; `max_active` counts that policy's non-terminal
+  reviews.
+- **Settings panel** for policy CRUD, and a trigger badge on review cards.
+
+### Changed
+
+- **Per-PR claim.** `cached_prs.policy_claim_at` is a compare-and-set marker taken before the
+  review row is created, so two ticks cannot start two reviews for one PR; a failed creation
+  releases it, and a stale claim expires.
+- **No auto-watch.** A policy starts the first review, not a watch: a watch would keep spending
+  per push beyond `max_active`, which is the only spend control this phase adds.
+
+---
+
+## Phase 39 — Deterministic pre-pass checks — 2026-11-12
+
+Plan: `docs/plans/phase_39_plan.md`. Migration `0019_check_packs`.
+
+### Added
+
+- **`checks_service`** with two data-driven packs, off by default: `secrets` (GitHub/AWS/OpenAI
+  key shapes and private-key headers) and `hygiene` (conflict markers, debugger statements,
+  `console.log`, focused/skipped tests). Fixture-shaped paths are skipped for key patterns.
+- **A pre-model pipeline stage** that anchors hits through the normal anchoring path, stores them
+  as `origin='CHECK'` threads, caps them per pack, and tells the model which lines are already
+  reported so it does not repeat them.
+- **`settings.check_packs`** plus a Settings card; a CHECK finding renders as a deterministic check
+  and is discussable, acceptable and publishable like any other.
+
+### Changed
+
+- **Dedupe prefers a check.** When a model finding and a check land on the same line, the
+  deterministic comment wins.
+
+---
+
 ## Phase 38 — Tab title and site icon — 2026-11-11
 
 Plan: `docs/plans/phase_38_plan.md`. Frontend only; no migration.

@@ -105,6 +105,7 @@ def reset_settings(client):
     from app.models.watch import ReviewWatch
     from app.services.progress import bus
     from app.models.lesson import SkillLesson
+    from app.models.policy import ReviewPolicy
 
     db = SessionLocal()
     try:
@@ -117,6 +118,7 @@ def reset_settings(client):
         db.query(ThreadRound).delete()
         db.query(ReviewThread).delete()
         db.query(CodeReview).delete()
+        db.query(ReviewPolicy).delete()
         db.query(Settings).delete()
         db.commit()
     finally:

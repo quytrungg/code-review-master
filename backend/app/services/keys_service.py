@@ -248,7 +248,8 @@ def credentials_for(key: LLMKey) -> llm_service.LLMCredentials:
 def credentials_for_provider(
     db: Session, user_id: int, provider: str
 ) -> llm_service.LLMCredentials:
-    """Credentials for a model-id provider (`claude`, `openai`, `ollama-cloud`, `ollama-local`)."""
+    """Credentials for a model-id provider (`claude`, `openai`, `opencode`, `ollama-cloud`,
+    `ollama-local`)."""
     db_provider = llm_service.DB_PROVIDER.get(provider, provider)
     key = llm_for(db, user_id, db_provider)
     if key is None:
@@ -262,6 +263,7 @@ def _missing_llm_message(provider: str) -> str:
     labels = {
         "claude": "Claude",
         "openai": "OpenAI",
+        "opencode": "OpenCode",
         "ollama_cloud": "Ollama Cloud",
         "ollama_local": "Ollama (local)",
     }
@@ -288,6 +290,10 @@ async def test_llm(key: LLMKey) -> tuple[bool, str, dict | None]:
         return await llm_service.probe_claude(key.api_key or "", base_url=base_url)
     if key.provider == "openai":
         return await llm_service.probe_openai(key.api_key or "", base_url=base_url)
+    if key.provider == "opencode":
+        return await llm_service.probe_openai(
+            key.api_key or "", base_url=base_url, label="OpenCode"
+        )
     if key.provider == "ollama_cloud":
         return await llm_service.probe_ollama(
             base_url, api_key=key.api_key, label="Ollama Cloud"

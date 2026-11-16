@@ -90,6 +90,17 @@ review is a `502`; there is no retry (the body-only retry disappeared with the r
   aliases. Apply posts the accepted text and never rewrites it; only a thread without accepted text
   falls back to the summarise-and-collate pass.
 
+## The AI opinion can be argued with
+
+`suggested_verdict` / `confidence_percentage` / `suggested_verdict_note` are advisory: ingest (or the
+merged-findings pass) writes them, a discussion round re-evaluates them, and a push-back contests
+them. `POST /reviews/{id}/verdict/pushback` sends the reviewer's argument plus the same review state
+through one `pushback` call: an **agreeing** answer rewrites the opinion, a **disagreeing** one is
+recorded and changes nothing. Every exchange is a `verdict_pushbacks` row, newest first on
+`GET …/verdict/pushbacks`. It never publishes and never touches the apply gate — the reviewer still
+picks the event; a comparison review, a `running` review, or a review with no opinion is `409`, a
+missing key is `422`, and a failed or unreadable answer is `502` with nothing written.
+
 ## Discussion has two transports
 
 `POST /discuss` (JSON) answers everything behind one gather and keeps the reviewer's message even
@@ -108,10 +119,46 @@ same GitHub account the token uses, so a comment is this review's own only when 
 whose root id was never stored by matching the posted text. Apply posts only `pending_apply` rounds;
 an apply with nothing pending is a `409`. Imported discussions and replies are GitHub-only.
 
+## A comparison is a sibling review, and it never publishes
+
+`POST /api/reviews/{id}/compare` creates a second review of the same PR with
+`parent_review_id`/`trigger='comparison'` and the primary's `commit_id`; the pipeline keeps that
+commit (warning when the head moved) and skips the PR-comment import, so the second run is
+findings-only. `comparison.merge` buckets the two finding sets: same file, at most two lines
+apart, and either the same normalised key or the identical line — `both` is evidence, not a score.
+Apply on a comparison review is a `409`; accept and apply the primary.
+
+## Deterministic checks run before the model
+
+`checks_service` packs are data (id, rules) and off unless `settings.check_packs` lists them. Hits
+are anchored through `anchor_findings` on added lines only, stored as `origin='CHECK'` threads, and
+capped per pack; a model finding on a check's line loses the dedupe because the check is certain.
+The user prompt lists the reported `path:line` pairs, and the review note names the counts. Key
+patterns skip test/fixture/mock paths — that is the v1 false-positive control.
+
+## Policies ride the watch tick
+
+`watch_service.tick` evaluates every enabled policy after the watches; serverless uses the same
+`POST /api/watches/tick`, so there is no second scheduler. A matching `needs_review` cached row
+with no linked review is claimed with a compare-and-set `cached_prs.policy_claim_at`, then a review
+is created with `trigger='policy'` and `policy_id`. `max_active` counts that policy's
+`running|draft|in_discussion` reviews; a failed creation releases the claim, and a stale claim
+expires. A policy does **not** auto-create a watch: a watch spends outside `max_active`.
+
+## Findings carry a normalised key
+
+`review_threads.norm_key` (revision `0021`, backfilled) is the first twelve lower-cased,
+severity-stripped words of the finding. Search is a portable `LIKE` on that key plus assistant
+text — no FTS, so both engines behave alike. "Seen before" means same repository and same key;
+the recurring panel groups by repository and key in SQL. Copy says "similar", never "duplicate".
+
 ## Publishing is inline comments only
 
 The review is created with no `body`; the comments carry the findings. Nothing to publish is an error
-(`422` when pruning leaves nothing, `502` when GitHub rejects), never an empty review, and dropped
+(`422` when pruning leaves nothing, `502` when GitHub rejects): never an empty review, and dropped
 threads are never posted. One exception: an `APPROVE` with nothing pending is an approval with no
-comments — the PR is the whole message, and `COMMENT`/`REQUEST_CHANGES` keep the error. The AI opinion
-is refreshed after each discussion submit; a failed pass keeps the previous verdict and warns.
+comments — the PR is the whole message. An approval is a **state change on the pull request, not pending content**, so a review that
+already published a `COMMENT` may still approve (phase 45); `approval_published` on `code_reviews`
+records that it did, and a second bare approval is `409`. `COMMENT`/`REQUEST_CHANGES` with nothing
+pending keep the old errors (`409` when applied, `400` otherwise). The AI opinion is refreshed after
+each discussion submit; a failed pass keeps the previous verdict and warns.

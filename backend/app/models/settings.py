@@ -36,6 +36,11 @@ class Settings(Base):
     beta_features: Mapped[dict] = mapped_column(
         JSON, nullable=False, default=dict, server_default="{}"
     )
+    # Deterministic pre-pass packs enabled for this account (`checks_service.PACK_IDS`). Empty
+    # means off: a pattern pack that reports without being asked is noise, not a feature.
+    check_packs: Mapped[list] = mapped_column(
+        JSON, nullable=False, default=list, server_default="[]"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )

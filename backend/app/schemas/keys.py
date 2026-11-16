@@ -9,7 +9,7 @@ from app.schemas.common import iso_utc
 from app.services.secrets import mask_secret
 
 VcsProvider = Literal["github", "gitlab"]
-LLMProvider = Literal["claude", "openai", "ollama_cloud", "ollama_local"]
+LLMProvider = Literal["claude", "openai", "ollama_cloud", "ollama_local", "opencode"]
 
 _SECRET_MAX = 500
 

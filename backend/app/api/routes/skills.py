@@ -18,9 +18,10 @@ from app.schemas.skills import (
     EvolutionHistory,
     FoundationRead,
     SkillFileUploadResponse,
+    SessionSourceRead,
     SkillsResponse,
 )
-from app.services import skill_analyzer_service, skills_service
+from app.services import agent_sessions_service, skill_analyzer_service, skills_service
 from app.services.skill_analyzer_service import EvolutionError
 from app.services.skills_service import SkillError
 
@@ -47,6 +48,16 @@ def list_skills() -> SkillsResponse:
                 files=info.files,
             )
             for info in foundations
+        ],
+        session_sources=[
+            SessionSourceRead(
+                id=source.id,
+                label=source.label,
+                path=source.path,
+                available=source.available,
+                detail=source.detail,
+            )
+            for source in agent_sessions_service.available_sources()
         ],
     )
 
@@ -113,16 +124,21 @@ async def analyze_history(
     user: CurrentUser,
     db: Session = Depends(get_db),
 ) -> EvolutionAnalysisResponse:
-    """Propose guideline edits from this account's recent review history."""
+    """Propose guideline edits from this account's recent review history.
+
+    When `session_source` is set, the last `days` of that local CLI-agent store are condensed and
+    added to the same analysis; a missing folder is a warning and leaves the review half intact.
+    """
     try:
         result = await skill_analyzer_service.analyse(
-            db, user.id, foundation_id, payload.days, payload.model
+            db, user.id, foundation_id, payload.days, payload.model, payload.session_source
         )
     except EvolutionError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     except SkillError as exc:
         _raise(exc)
 
+    sessions = result.session_digest
     return EvolutionAnalysisResponse(
         analysis_summary=result.summary,
         file_modifications=[
@@ -142,6 +158,9 @@ async def analyze_history(
             reviews=result.digest.review_count,
             threads=result.digest.thread_count,
             interactions=result.digest.interaction_count,
+            session_source=sessions.source if sessions else None,
+            sessions=sessions.sessions if sessions else 0,
+            exchanges=sessions.exchanges if sessions else 0,
         ),
         warnings=result.warnings,
     )

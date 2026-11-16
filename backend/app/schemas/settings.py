@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from app.schemas.common import iso_utc
+from app.services import checks_service
 from app.services.secrets import mask_secret
 from app.services.settings_service import BETA_FEATURES
 
@@ -25,10 +26,21 @@ class SettingsUpdate(BaseModel):
     # Beta flags, a full-dict replace. `null` clears every flag; an absent field leaves
     # them alone. Ids are validated against the registry at the route boundary (422).
     beta_features: dict[str, bool] | None = None
+    # Deterministic pack ids, a full-list replace. `null` (or []) turns every check off; an
+    # absent field leaves the selection alone. Unknown ids are a 422.
+    check_packs: list[str] | None = None
 
 
 class BetaFeature(BaseModel):
     """One registry entry: what the Settings page renders as a toggle."""
+
+    id: str
+    label: str
+    description: str
+
+
+class CheckPack(BaseModel):
+    """One deterministic pre-pass pack, rendered as a checkbox on the Settings page."""
 
     id: str
     label: str
@@ -55,6 +67,9 @@ class SettingsRead(BaseModel):
     # Every registry id appears, defaulting to false — the page never infers defaults.
     beta_features: dict[str, bool] = {}
     beta_registry: list[BetaFeature] = []
+    # Deterministic checks: the selected pack ids, and every pack for the page to render.
+    check_packs: list[str] = []
+    check_pack_registry: list[CheckPack] = []
     updated_at: str | None = None
 
     # Populated only when the request asks for revelation.
@@ -99,6 +114,8 @@ class SettingsRead(BaseModel):
                 for entry in BETA_FEATURES
             },
             beta_registry=[BetaFeature(**entry) for entry in BETA_FEATURES],
+            check_packs=list(getattr(row, "check_packs", None) or []),
+            check_pack_registry=[CheckPack(**entry) for entry in checks_service.pack_registry()],
             updated_at=iso_utc(row.updated_at),
             version_control_token=version_control.token if (reveal and version_control) else None,
             llm_api_key=llm.api_key if (reveal and llm) else None,

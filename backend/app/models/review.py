@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
@@ -19,6 +20,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, utcnow
+
+if TYPE_CHECKING:  # the row lives in its own module; the string annotation keeps it one-way
+    from app.models.verdict_pushback import VerdictPushback
 
 
 class ReviewStatus:
@@ -48,12 +52,13 @@ class MessageRole:
 
 
 class ThreadOrigin:
-    """Where a thread came from: our model, or the pull request's own comments."""
+    """Where a thread came from: our model, a deterministic check, or the PR's own comments."""
 
     AI_GENERATED = "AI_GENERATED"
     GITHUB_EXISTING = "GITHUB_EXISTING"
+    CHECK = "CHECK"
 
-    ALL = (AI_GENERATED, GITHUB_EXISTING)
+    ALL = (AI_GENERATED, GITHUB_EXISTING, CHECK)
 
 
 class ThreadStatus:
@@ -106,6 +111,13 @@ class CodeReview(Base):
     skill_foundation: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default=ReviewStatus.DRAFT)
     verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # True once this review put an approving review on the pull request. `verdict` cannot answer
+    # that: it records the event of the last apply, and a replies-only apply sets it without
+    # publishing any review. Phase 45 uses this to allow an approval after a COMMENT review while
+    # still refusing a duplicate one.
+    approval_published: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
     # What the model thinks should happen, and how sure it is (0-100).
     suggested_verdict: Mapped[str | None] = mapped_column(String(32), nullable=True)
     confidence_percentage: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -121,6 +133,10 @@ class CodeReview(Base):
     watch_id: Mapped[int | None] = mapped_column(
         ForeignKey("review_watches.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Set on a policy-started review: the standing instruction that started it.
+    policy_id: Mapped[int | None] = mapped_column(
+        ForeignKey("review_policies.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     trigger: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
@@ -133,6 +149,13 @@ class CodeReview(Base):
         back_populates="review",
         cascade="all, delete-orphan",
         order_by="ReviewThread.id",
+        lazy="selectin",
+    )
+
+    # The argument over the AI opinion: newest last, like the threads above.
+    pushbacks: Mapped[list["VerdictPushback"]] = relationship(
+        cascade="all, delete-orphan",
+        order_by="VerdictPushback.id",
         lazy="selectin",
     )
 
@@ -161,6 +184,9 @@ class ReviewThread(Base):
         String(24), nullable=False, default=ThreadStatus.ACTIVE, server_default=ThreadStatus.ACTIVE
     )
     # Filled by the pre-publish summarisation pass.
+    # Normalised finding key (phase 41): stable, severity-stripped, indexed. Nullable so imported
+    # GitHub threads and pre-migration rows are honestly "not indexed" rather than empty strings.
+    norm_key: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     dropped: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(

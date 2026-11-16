@@ -20,8 +20,10 @@ class ReviewTrigger:
     """Why a review row exists. `None` on a review means the operator started it by hand."""
 
     WATCH = "watch"
+    POLICY = "policy"
+    COMPARISON = "comparison"
 
-    ALL = (WATCH,)
+    ALL = (WATCH, POLICY, COMPARISON)
 
 
 class ReviewWatch(Base):

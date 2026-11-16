@@ -2,18 +2,22 @@
 
 A local-first, interactive pull-request reviewer. Point it at a GitHub PR or GitLab MR, let a model review the diff against **your own review standards**, discuss the findings in a side-by-side workspace, then publish the agreed conclusion as one review with inline comments.
 
-Use **Ollama Cloud** (default), **Claude**, **OpenAI/Codex**, or a **local Ollama daemon**. Nothing leaves your machine except the diff and prompts sent to the model you choose; credentials, reviews, and conversations stay in your own database.
+Use **Ollama Cloud** (default), **Claude**, **OpenAI/Codex**, **OpenCode** (Zen or a Go subscription), or a **local Ollama daemon**. Nothing leaves your machine except the diff and prompts sent to the model you choose; credentials, reviews, and conversations stay in your own database.
 
 ## Highlights
 
 - **Your standards, not generic advice** — inject a local markdown skill library into each review, with rules selected for the files that changed.
 - **Findings anchored to real code** — every finding is mapped to a valid diff line, with its code context rebuilt from the actual PR diff.
-- **A review you can argue with** — discuss findings, reference other threads with `#N`, accept a conclusion, or push back before anything is published. Replies stream token by token; stop the batch or retry one thread without losing what finished.
+- **A review you can argue with** — discuss findings, reference other threads with `#N`, accept a conclusion, or push back before anything is published. Disagree with the AI's verdict itself and it re-reads the review against your reasoning, then says whether it changed its mind. Replies stream token by token; stop the batch or retry one thread without losing what finished.
 - **Existing conversations included** — import current PR comments, sync new replies, and manage AI findings and human discussions in one workspace.
 - **Publish only what you approve** — accepted findings become one review with inline comments; rejected or withdrawn findings stay unpublished.
 - **Follow new pushes automatically** — watch a PR and review only the delta when its head commit changes.
-- **Your standards can improve themselves** — let a model read your last 30 days of pushbacks and propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
+- **Your standards can improve themselves** — let a model read your last 30 days of pushbacks, optionally add one local Claude Code, Codex or Hermes session store, propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
 - **Understand model usage** — track calls, tokens, latency, estimated cost, acceptance rate, and push-back rate per review and across models.
+- **Catch what a regex knows for certain** — optional deterministic packs flag committed token prefixes, private-key headers, conflict markers, debugger statements, `console.log`, and focused tests before the model runs, at zero tokens.
+- **Let the queue move itself** — a standing policy reviews PRs in a repository that are waiting on you, on the same tick that watches already use.
+- **Remember what you have flagged before** — every finding carries a normalised key, so search spans reviews, a finding shows prior matches in the same repository, and Analytics lists recurring patterns.
+- **Compare models on the same diff** — re-run a review with a second model, priced before it starts, and read one merge view of both / only-A / only-B findings.
 
 ## How it works
 
@@ -46,7 +50,9 @@ A typical session looks like this:
 2. Watch ingest progress while the app fetches the diff, loads review rules, and generates findings.
 3. Inspect each finding beside its anchored code hunk.
 4. Discuss uncertain findings, sync incoming PR comments, and accept or reject each conclusion.
-5. Choose `REQUEST_CHANGES`, `APPROVE`, or `COMMENT` and apply the review.
+5. Choose `REQUEST_CHANGES`, `APPROVE`, or `COMMENT` and apply the review. An approval needs nothing
+   accepted — the PR is the message — and a review that already posted comments can still approve the
+   same pull request once.
 6. Optionally watch the PR so later pushes receive a linked delta review.
 
 ## Requirements
@@ -54,7 +60,7 @@ A typical session looks like this:
 - Python 3.12 and Node.js 18+
 - PostgreSQL 14+ (SQLite is also supported for local trials and tests)
 - A GitHub token or GitLab personal access token
-- An Ollama Cloud, Anthropic, or OpenAI API key, or a running local Ollama daemon
+- An Ollama Cloud, Anthropic, OpenAI, or OpenCode (Zen or Go) API key, or a running local Ollama daemon
 
 ## Quick start
 
@@ -92,9 +98,13 @@ On first launch, the setup guide asks for:
 
 1. **Version control** — add a GitHub or GitLab token.
 2. **Model provider** — add a hosted-provider API key or a local Ollama base URL.
-3. **First review** — return to the dashboard, paste a PR/MR URL, select a model, and choose **Start review**.
+3. **First review** — return to the dashboard and choose **New code review**, paste a PR/MR URL, select a model, and choose **Start review**. The list below it is paged 10 rows at a time (10/20/50/100), and the magnifier next to **Refresh** searches findings across every review.
 
 Settings also has a **Beta features** card: experiments in development, switched on per account and stored with your settings. The first flag is *Push-back lessons* — when you push back on a finding, the app offers to record the lesson as a rule in a skill foundation. Turn the flag on, click Push back, and a dialog asks: **No** dismisses it and pushes back as usual; **Yes** drafts a reusable rule from the finding (editable), you pick the target foundation, and **Save lesson** writes it there as `lessons/<filetype>-<slug>.md` — so future reviews of the same file type load it.
+
+Two more Settings cards have nothing to do with betas. **Deterministic checks** switches on the pre-pass packs (off by default): a matching line becomes an ordinary finding, discussable and publishable, and the model is told not to repeat it. **Standing policies** reviews PRs in a repository as they arrive in your inbox, at most *N* at a time and only for the involvement you choose; they run on the watch tick, so a deployment with no tick runs none.
+
+The **Skills** tab has **Evolve from review history** in its header. The dialog picks the foundation and the model; the evidence is the last 30 days of review history — past reviews and the corrections you left in their comment threads. Nothing else is read, so the analysis works the same locally and on a hosted deployment. (The backend can still add a local CLI-agent folder to the prompt through `POST /api/skills/{foundation}/analyze-history` with `session_source`, but the dialog no longer offers it.)
 
 Credentials are encrypted at rest when `CREDENTIALS_ENCRYPTION_KEY` is configured. Generate a key with:
 

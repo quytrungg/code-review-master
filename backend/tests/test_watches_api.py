@@ -206,6 +206,9 @@ def test_the_tick_accepts_either_header(client, monkeypatch):
         "skipped": 0,
         "started": [],
         "failed": [],
+        "policy_started": [],
+        "policy_skipped": 0,
+        "policy_failed": [],
     }
 
 

@@ -15,18 +15,24 @@ import {
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { Label, Select } from "@/components/ui/Input";
+import { EvolveHistoryModal } from "@/components/EvolveHistoryModal";
 import { FoundationUpload } from "@/components/FoundationUpload";
 import { SkillEvolutionModal } from "@/components/SkillEvolutionModal";
 import { api, ApiError } from "@/services/api";
-import type { ModelOption, SkillEvolutionAnalysis, SkillsResponse } from "@/types";
+import type {
+  ModelOption,
+  SkillEvolutionAnalysis,
+  SkillsResponse,
+} from "@/types";
 
 /** The stages the analysis moves through, shown while the model works. */
-const EVOLUTION_STAGES = [
-  "Gathering 30-day review interactions & user pushbacks…",
-  "Correlating false positives against skill rules…",
-  "Drafting proposed guideline updates…",
-];
+function evolutionStages(): string[] {
+  return [
+    "Gathering 30-day review interactions & user pushbacks…",
+    "Correlating false positives against skill rules…",
+    "Drafting proposed guideline updates…",
+  ];
+}
 
 function formatChars(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)} MB`;
@@ -42,12 +48,15 @@ export function SkillsPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
 
-  // Skill evolution: the foundation and the model to run the meta-analysis with.
+  // Skill evolution: the foundation and the model to run the meta-analysis with. The evidence is
+  // the review history. The choices live in a modal opened from the page header.
   const [models, setModels] = useState<ModelOption[]>([]);
   const [model, setModel] = useState("");
   const [foundation, setFoundation] = useState("");
+  const [evolveOpen, setEvolveOpen] = useState(false);
   const [analysing, setAnalysing] = useState(false);
   const [stage, setStage] = useState(0);
+  const [stages, setStages] = useState<string[]>(() => evolutionStages());
   const [analysis, setAnalysis] = useState<SkillEvolutionAnalysis | null>(null);
   const stageTimer = useRef<number | null>(null);
 
@@ -79,20 +88,22 @@ export function SkillsPage() {
   );
 
   /** Run the meta-analysis and open the workbench with its proposals. */
-  async function evolve() {
-    if (!foundation || !model) return;
+  async function evolve(chosenFoundation: string, chosenModel: string) {
+    if (!chosenFoundation || !chosenModel) return;
+    setEvolveOpen(false);
     setAnalysing(true);
     setError(null);
     setNotice(null);
     setStage(0);
+    setStages(evolutionStages());
     // The stages are a readable trace of a single long call: the panel advances while the
     // model works, and the last stage stays up until the answer lands.
     if (stageTimer.current !== null) window.clearInterval(stageTimer.current);
     stageTimer.current = window.setInterval(() => {
-      setStage((current) => Math.min(current + 1, EVOLUTION_STAGES.length - 1));
+      setStage((current) => Math.min(current + 1, evolutionStages().length - 1));
     }, 2500);
     try {
-      const result = await api.analyzeSkillHistory(foundation, 30, model);
+      const result = await api.analyzeSkillHistory(chosenFoundation, 30, chosenModel);
       setAnalysis(result);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "The analysis failed.");
@@ -178,9 +189,14 @@ export function SkillsPage() {
             folder of rules you can pick per review.
           </p>
         </div>
-        <Button variant="secondary" onClick={() => void load()} disabled={loading || busy}>
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button onClick={() => setEvolveOpen(true)} disabled={loading || busy || analysing}>
+            <Brain className="h-4 w-4" /> Evolve from review history
+          </Button>
+          <Button variant="secondary" onClick={() => void load()} disabled={loading || busy}>
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+        </div>
       </header>
 
       {error ? (
@@ -193,68 +209,6 @@ export function SkillsPage() {
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" /> {notice}
         </div>
       ) : null}
-
-      <Card>
-        <CardHeader
-          icon={<Brain className="h-4 w-4" />}
-          title="Evolve from review history"
-          description="Let a model read your last 30 days of pushbacks and propose edits to the guideline files."
-        />
-        <CardBody>
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="min-w-[200px] flex-1 space-y-1">
-              <Label htmlFor="evolve-foundation">Skill foundation</Label>
-              <Select
-                id="evolve-foundation"
-                value={foundation}
-                onChange={(event) => setFoundation(event.target.value)}
-                disabled={analysing || busy}
-              >
-                {(data?.foundations ?? []).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.id}
-                    {item.is_default ? " (default)" : ""} · {item.file_count} file(s)
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div className="min-w-[200px] flex-1 space-y-1">
-              <Label htmlFor="evolve-model">Model</Label>
-              <Select
-                id="evolve-model"
-                value={model}
-                onChange={(event) => setModel(event.target.value)}
-                disabled={analysing || busy}
-              >
-                {model === "" ? (
-                  <option value="">
-                    {models.length === 0 ? "No providers configured" : "Select a model"}
-                  </option>
-                ) : null}
-                {models.map((option) => (
-                  <option key={option.id} value={option.id} disabled={!option.available}>
-                    {option.label}
-                    {option.available ? "" : ` (${option.note ?? "unavailable"})`}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <Button onClick={() => void evolve()} disabled={analysing || busy || !foundation || !model}>
-              {analysing ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Brain className="h-4 w-4" />
-              )}
-              {analysing ? "Analysing…" : "Evolve from review history"}
-            </Button>
-          </div>
-          {models.length === 0 ? (
-            <p className="text-xs text-inkMuted">
-              Add a model key in Settings before running an analysis.
-            </p>
-          ) : null}
-        </CardBody>
-      </Card>
 
       <Card>
         <CardHeader
@@ -387,7 +341,7 @@ export function SkillsPage() {
               <Loader2 className="h-4 w-4 animate-spin text-accent" /> Analysing the review history
             </p>
             <ol className="space-y-2">
-              {EVOLUTION_STAGES.map((label, index) => (
+              {stages.map((label, index) => (
                 <li
                   key={label}
                   className={
@@ -410,10 +364,25 @@ export function SkillsPage() {
               ))}
             </ol>
             <p className="text-[11px] text-inkMuted">
-              This sends the foundation&apos;s rules and the review history to your chosen model.
+              This sends the foundation&apos;s rules and the selected history to your chosen model.
             </p>
           </div>
         </div>
+      ) : null}
+
+      {evolveOpen && !analysing ? (
+        <EvolveHistoryModal
+          foundations={data?.foundations ?? []}
+          models={models}
+          defaultFoundation={foundation}
+          defaultModel={model}
+          onClose={() => setEvolveOpen(false)}
+          onStart={(choice) => {
+            setFoundation(choice.foundation);
+            setModel(choice.model);
+            void evolve(choice.foundation, choice.model);
+          }}
+        />
       ) : null}
 
       {analysis ? (

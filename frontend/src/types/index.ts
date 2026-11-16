@@ -4,12 +4,12 @@ export type InboxStatus = "needs_review" | "approved" | "request_changed" | "com
 export type CachedPRInvolvement = "reviewer" | "assignee" | "author";
 export type QuickReviewEvent = ReviewVerdict;
 export type MessageRole = "assistant" | "user" | "system";
-export type ThreadOrigin = "AI_GENERATED" | "GITHUB_EXISTING";
+export type ThreadOrigin = "AI_GENERATED" | "GITHUB_EXISTING" | "CHECK";
 export type ThreadStatus = "active" | "needs_response" | "applied" | "resolved";
 export type RoundStatus = "drafting" | "pending_apply" | "published" | "resolved_no_reply";
 
 export type VcsProvider = "github" | "gitlab";
-export type LLMProvider = "claude" | "openai" | "ollama_cloud" | "ollama_local";
+export type LLMProvider = "claude" | "openai" | "opencode" | "ollama_cloud" | "ollama_local";
 
 export interface VersionControlKey {
   id: number;
@@ -57,6 +57,9 @@ export interface AppSettings {
   // Beta flags: one key per registry id, false when off. `beta_registry` is the render source.
   beta_features: Record<string, boolean>;
   beta_registry: BetaFeature[];
+  // Deterministic pre-pass packs: the selected ids and every pack to render.
+  check_packs: string[];
+  check_pack_registry: CheckPack[];
   updated_at: string | null;
   version_control_token?: string | null;
   llm_api_key?: string | null;
@@ -68,6 +71,7 @@ export interface SettingsUpdate {
   monthly_token_budget?: number | null;
   monthly_dollar_budget?: number | null;
   beta_features?: Record<string, boolean> | null;
+  check_packs?: string[] | null;
 }
 
 export interface KeyTestResult {
@@ -105,7 +109,7 @@ export interface ConnectionTestResponse {
 export interface ModelOption {
   id: string;
   label: string;
-  provider: "claude" | "openai" | "ollama-cloud" | "ollama-local";
+  provider: "claude" | "openai" | "opencode" | "ollama-cloud" | "ollama-local";
   available: boolean;
   note?: string | null;
 }
@@ -172,6 +176,19 @@ export interface SkillsResponse {
   default: string;
   uploads_enabled: boolean;
   foundations: Foundation[];
+  /** Local CLI-agent session folders the evolve analysis can read. */
+  session_sources: SessionSource[];
+}
+
+/** One local CLI-agent store the evolve analysis can mine for corrections. */
+export type EvolutionSessionSource = "claude" | "codex" | "hermes";
+
+export interface SessionSource {
+  id: EvolutionSessionSource;
+  label: string;
+  path: string;
+  available: boolean;
+  detail?: string | null;
 }
 
 export interface SkillFileUpload {
@@ -198,6 +215,10 @@ export interface SkillEvolutionHistory {
   reviews: number;
   threads: number;
   interactions: number;
+  /** Set when a local agent session store was added to the analysis. */
+  session_source: EvolutionSessionSource | null;
+  sessions: number;
+  exchanges: number;
 }
 
 export interface SkillEvolutionAnalysis {
@@ -254,7 +275,7 @@ export interface ReviewUsage {
   latency_ms: number;
 }
 
-export type LLMPurpose = "ingest" | "discuss" | "verdict" | "summarise" | "polish" | "evolve";
+export type LLMPurpose = "ingest" | "discuss" | "verdict" | "summarise" | "polish" | "evolve" | "lesson";
 export type BudgetLevel = "ok" | "warn" | "over";
 
 export interface AnalyticsTotals {
@@ -334,6 +355,8 @@ export interface AnalyticsResponse {
   by_purpose: PurposeUsage[];
   quality: QualitySummary;
   budget: BudgetStatus;
+  /** Keys seen in more than one review in the window. */
+  recurring: RecurringFinding[];
 }
 
 export interface CodeReviewSummary {
@@ -471,16 +494,139 @@ export interface CodeReviewDetail extends CodeReviewSummary {
   confidence_percentage: number | null;
   suggested_verdict_note: string | null;
   github_review_url: string | null;
+  /** True once this review approved the pull request; blocks a duplicate approval. */
+  approval_published: boolean;
   /** The watch covering this pull request, when there is one. */
   watch: ReviewWatch | null;
   threads: ReviewThread[];
   warnings: string[];
 }
 
+/** One reviewer push-back against the AI's opinion, and the model's answer to it. */
+export interface VerdictPushback {
+  id: number;
+  argument: string;
+  previous_verdict: ReviewVerdict | null;
+  previous_confidence: number | null;
+  agrees: boolean;
+  verdict: ReviewVerdict;
+  confidence: number | null;
+  response: string;
+  created_at: string | null;
+}
+
+export interface VerdictPushbackResponse {
+  pushback: VerdictPushback;
+  review: CodeReviewDetail;
+}
+
 export interface BetaFeature {
   id: string;
   label: string;
   description: string;
+}
+
+/** One deterministic pre-pass pack, rendered as a Settings checkbox. */
+export interface CheckPack {
+  id: string;
+  label: string;
+  description: string;
+}
+
+/** A standing review policy: a repo glob, a model, a foundation and a concurrency cap. */
+export interface ReviewPolicy {
+  id: number;
+  repo_pattern: string;
+  involvement: "reviewer" | "assignee" | "author" | "any";
+  model_used: string;
+  skill_foundation: string | null;
+  max_active: number;
+  enabled: boolean;
+  last_run_at: string | null;
+  last_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ReviewPolicyCreate {
+  repo_pattern: string;
+  involvement: ReviewPolicy["involvement"];
+  model: string;
+  skill_foundation?: string | null;
+  max_active?: number;
+  enabled?: boolean;
+}
+
+/** One prior finding, from search or the "seen before" panel. */
+export interface FindingHit {
+  review_id: number;
+  thread_id: number;
+  repo_full_name: string | null;
+  file_path: string;
+  line_number: number;
+  origin: ThreadOrigin;
+  snippet: string;
+  accepted: boolean;
+  created_at: string | null;
+}
+
+export interface FindingSearchResponse {
+  items: FindingHit[];
+  total: number;
+}
+
+export interface SimilarFindingsResponse {
+  items: FindingHit[];
+}
+
+/** A key seen in more than one review in one repository. Evidence, not a duplicate claim. */
+export interface RecurringFinding {
+  repo_full_name: string;
+  key: string;
+  reviews: number;
+  findings: number;
+  last_seen: string | null;
+}
+
+export interface ComparisonSide {
+  id: number;
+  model_used: string | null;
+  thread_count: number;
+}
+
+export interface ComparisonMatch {
+  primary_thread_id: number;
+  comparison_thread_id: number;
+  file_path: string;
+  primary_line: number;
+  comparison_line: number;
+  snippet: string;
+}
+
+export interface ComparisonItem {
+  review_id: number;
+  thread_id: number;
+  file_path: string;
+  line_number: number;
+  origin: ThreadOrigin;
+  snippet: string;
+}
+
+export interface ComparisonRead {
+  primary: ComparisonSide;
+  comparison: ComparisonSide;
+  both: ComparisonMatch[];
+  primary_only: ComparisonItem[];
+  comparison_only: ComparisonItem[];
+  line_tolerance: number;
+}
+
+export interface ComparisonEstimate {
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  estimated_cost_usd: number | null;
+  note: string;
 }
 
 export interface LessonDraft {

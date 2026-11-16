@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  GitPullRequest,
+  Loader2,
+  RefreshCw,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
-import { NewReviewPanel } from "@/components/NewReviewPanel";
+import { Select } from "@/components/ui/Input";
+import { FindingSearchModal } from "@/components/FindingSearchModal";
+import { NewReviewModal } from "@/components/NewReviewModal";
 import { WatchesPanel } from "@/components/WatchesPanel";
 import { api, ApiError } from "@/services/api";
 import {
@@ -16,6 +27,9 @@ import {
   relativeTime,
 } from "@/lib/utils";
 import type { AnalyticsResponse, BudgetStatus, CodeReviewSummary, ReviewWatch } from "@/types";
+
+const PAGE_SIZES = [10, 20, 50, 100];
+const DEFAULT_PAGE_SIZE = 10;
 
 /** The one line the caps breach, in the order a reader cares about it. */
 function budgetWarnings(budget: BudgetStatus): string[] {
@@ -86,6 +100,10 @@ export function DashboardPage() {
   const [watchBusyId, setWatchBusyId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [newReviewOpen, setNewReviewOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -136,6 +154,12 @@ export function DashboardPage() {
     }
   };
 
+  // Derived, so a shrinking list or a smaller page size can never strand the reader on an empty page.
+  const pageCount = Math.max(1, Math.ceil(reviews.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const firstRow = currentPage * pageSize;
+  const visibleReviews = reviews.slice(firstRow, firstRow + pageSize);
+
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-end justify-between gap-3">
@@ -145,12 +169,24 @@ export function DashboardPage() {
             Every pull request you have reviewed here, with the model used and its current state.
           </p>
         </div>
-        <Button variant="secondary" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={() => setNewReviewOpen(true)}>
+            <Sparkles className="h-4 w-4" /> New code review
+          </Button>
+          <Button
+            variant="secondary"
+            className="w-10 px-0"
+            onClick={() => setSearchOpen(true)}
+            aria-label="Search findings"
+            title="Search findings"
+          >
+            <Search className="h-4 w-4" />
+          </Button>
+          <Button variant="secondary" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className="h-4 w-4" /> Refresh
+          </Button>
+        </div>
       </header>
-
-      <NewReviewPanel />
 
       {analytics ? (
         <div className="space-y-2">
@@ -186,6 +222,13 @@ export function DashboardPage() {
           icon={<GitPullRequest className="h-4 w-4" />}
           title="Review history"
           description="Open a review to read the findings and discuss them with the model."
+          action={
+            !loading && reviews.length > 0 ? (
+              <span className="text-[11px] text-inkMuted">
+                {reviews.length} review{reviews.length === 1 ? "" : "s"}
+              </span>
+            ) : null
+          }
         />
         <CardBody>
           {loading ? (
@@ -198,66 +241,136 @@ export function DashboardPage() {
             <div className="rounded-xl border border-dashed border-borderStrong/70 p-8 text-center">
               <p className="text-sm text-ink">No reviews yet</p>
               <p className="mt-1 text-xs text-inkMuted">
-                Paste a pull request URL above, pick a model, and the findings land here.
+                Use New code review, paste a pull request URL and pick a model — the findings land
+                here.
               </p>
-              <Link to="/settings">
-                <Button className="mt-4" variant="secondary" size="sm">
-                  Open settings
-                </Button>
-              </Link>
+              <Button className="mt-4" variant="secondary" size="sm" onClick={() => setNewReviewOpen(true)}>
+                <Sparkles className="h-3.5 w-3.5" /> New code review
+              </Button>
             </div>
           ) : (
-            <div className="overflow-hidden rounded-xl border border-border">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-surfaceMuted/60 text-xs uppercase tracking-wide text-inkMuted">
-                  <tr>
-                    <th className="px-4 py-2.5 font-medium">Pull request</th>
-                    <th className="px-4 py-2.5 font-medium">Repository</th>
-                    <th className="px-4 py-2.5 font-medium">Model</th>
-                    <th className="px-4 py-2.5 font-medium">Status</th>
-                    <th className="px-4 py-2.5 font-medium">Created</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {reviews.map((review) => (
-                    <tr key={review.id} className="transition-colors hover:bg-surfaceMuted/40">
-                      <td className="px-4 py-3">
-                        <Link to={`/reviews/${review.id}`} className="hover:text-accent">
-                          <span className="font-medium text-ink">
-                            {review.pr_title ?? `PR #${review.pr_number ?? review.id}`}
-                          </span>
-                          {review.pr_number ? (
-                            <span className="ml-2 text-xs text-inkMuted">#{review.pr_number}</span>
-                          ) : null}
-                        </Link>
-                        {review.parent_review_id ? (
-                          <Link
-                            to={`/reviews/${review.parent_review_id}`}
-                            className="ml-2 text-[11px] text-accent transition-colors hover:text-accentStrong"
-                            title="A watch started this review for the commits added since that one."
-                          >
-                            Continues #{review.parent_review_id}
-                          </Link>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-inkMuted">{review.repo_full_name ?? "—"}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-inkMuted">
-                        {review.model_used ?? "—"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge tone={statusTone(review.status)}>{statusLabel(review.status)}</Badge>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-inkMuted">
-                        {relativeTime(review.created_at)}
-                      </td>
+            <div className="space-y-3">
+              <div className="overflow-hidden rounded-xl border border-border">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-surfaceMuted/60 text-xs uppercase tracking-wide text-inkMuted">
+                    <tr>
+                      <th className="px-4 py-2.5 font-medium">Pull request</th>
+                      <th className="px-4 py-2.5 font-medium">Repository</th>
+                      <th className="px-4 py-2.5 font-medium">Model</th>
+                      <th className="px-4 py-2.5 font-medium">Status</th>
+                      <th className="px-4 py-2.5 font-medium">Created</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {visibleReviews.map((review) => (
+                      <tr key={review.id} className="transition-colors hover:bg-surfaceMuted/40">
+                        <td className="px-4 py-3">
+                          <Link to={`/reviews/${review.id}`} className="hover:text-accent">
+                            <span className="font-medium text-ink">
+                              {review.pr_title ?? `PR #${review.pr_number ?? review.id}`}
+                            </span>
+                            {review.pr_number ? (
+                              <span className="ml-2 text-xs text-inkMuted">#{review.pr_number}</span>
+                            ) : null}
+                          </Link>
+                          {review.parent_review_id ? (
+                            <Link
+                              to={`/reviews/${review.parent_review_id}`}
+                              className="ml-2 text-[11px] text-accent transition-colors hover:text-accentStrong"
+                              title="A watch started this review for the commits added since that one."
+                            >
+                              Continues #{review.parent_review_id}
+                            </Link>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-inkMuted">{review.repo_full_name ?? "—"}</td>
+                        <td className="px-4 py-3 font-mono text-xs text-inkMuted">
+                          {review.model_used ?? "—"}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <Badge tone={statusTone(review.status)}>{statusLabel(review.status)}</Badge>
+                            {review.trigger ? (
+                              <Badge tone="accent">
+                                {review.trigger === "policy"
+                                  ? "Standing policy"
+                                  : review.trigger === "comparison"
+                                    ? "Comparison"
+                                    : "Watch"}
+                              </Badge>
+                            ) : null}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-inkMuted">
+                          {relativeTime(review.created_at)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <nav
+                aria-label="Review history pages"
+                className="flex flex-wrap items-center justify-between gap-3"
+              >
+                <p className="text-[11px] text-inkMuted">
+                  Showing {firstRow + 1}–{Math.min(firstRow + pageSize, reviews.length)} of{" "}
+                  {reviews.length}
+                </p>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="reviews-page-size" className="text-[11px] text-inkMuted">
+                    Rows per page
+                  </label>
+                  <Select
+                    id="reviews-page-size"
+                    value={pageSize}
+                    onChange={(event) => {
+                      setPageSize(Number(event.target.value));
+                      setPage(0);
+                    }}
+                    className="h-8 w-[4.75rem] text-xs"
+                  >
+                    {PAGE_SIZES.map((size) => (
+                      <option key={size} value={size}>
+                        {size}
+                      </option>
+                    ))}
+                  </Select>
+                  {pageCount > 1 ? (
+                    <>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setPage(Math.max(0, currentPage - 1))}
+                        disabled={currentPage === 0}
+                        aria-label="Previous page"
+                      >
+                        <ChevronLeft className="h-3.5 w-3.5" /> Previous
+                      </Button>
+                      <span className="text-[11px] text-inkMuted">
+                        Page {currentPage + 1} of {pageCount}
+                      </span>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setPage(Math.min(pageCount - 1, currentPage + 1))}
+                        disabled={currentPage >= pageCount - 1}
+                        aria-label="Next page"
+                      >
+                        Next <ChevronRight className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+              </nav>
             </div>
           )}
         </CardBody>
       </Card>
+
+      {newReviewOpen ? <NewReviewModal onClose={() => setNewReviewOpen(false)} /> : null}
+      {searchOpen ? <FindingSearchModal onClose={() => setSearchOpen(false)} /> : null}
     </div>
   );
 }

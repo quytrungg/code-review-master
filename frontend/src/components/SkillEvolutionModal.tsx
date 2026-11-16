@@ -222,6 +222,9 @@ export function SkillEvolutionModal({
             <p className="text-xs text-inkMuted">
               {foundation.id} · {analysis.history.reviews} review(s),{" "}
               {analysis.history.interactions} pushback(s) in the last {analysis.history.days} days
+              {analysis.history.session_source
+                ? ` · ${analysis.history.session_source} sessions: ${analysis.history.sessions} scanned, ${analysis.history.exchanges} correction(s)`
+                : ""}
             </p>
           </div>
           <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close" disabled={busy}>

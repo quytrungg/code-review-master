@@ -6,9 +6,12 @@ import type {
   CachedPR,
   CodeReviewDetail,
   CodeReviewSummary,
+  ComparisonEstimate,
+  ComparisonRead,
   ConnectionTestResponse,
   CreateReviewAccepted,
   DiscussionStreamEvent,
+  FindingSearchResponse,
   Foundation,
   InboxFilters,
   InboxSyncResponse,
@@ -19,11 +22,14 @@ import type {
   LessonDraft,
   ModelCatalog,
   QuickReviewEvent,
+  ReviewPolicy,
+  ReviewPolicyCreate,
   ReviewVerdict,
   ReviewWatch,
   RoundDecision,
   RoundDecisionResponse,
   SettingsUpdate,
+  SimilarFindingsResponse,
   SyncResponse,
   SkillEvolutionAnalysis,
   SkillEvolutionApplyResponse,
@@ -31,6 +37,8 @@ import type {
   SkillEvolutionFileChange,
   SkillFileUpload,
   SkillsResponse,
+  VerdictPushback,
+  VerdictPushbackResponse,
   VersionControlKey,
   VersionControlKeyCreate,
 } from "@/types";
@@ -106,6 +114,13 @@ export const api = {
     request<AppSettings>("/settings", {
       method: "PUT",
       body: JSON.stringify({ beta_features: flags }),
+    }),
+
+  // Deterministic pre-pass packs: full-list replace, same contract as the beta flags.
+  setCheckPacks: (packs: string[]) =>
+    request<AppSettings>("/settings", {
+      method: "PUT",
+      body: JSON.stringify({ check_packs: packs }),
     }),
 
   testConnection: (targets: string[]) =>
@@ -247,6 +262,15 @@ export const api = {
       body: JSON.stringify({ decision, summary: summary ?? null }),
     }),
 
+  pushBackVerdict: (reviewId: number, argument: string) =>
+    request<VerdictPushbackResponse>(`/reviews/${reviewId}/verdict/pushback`, {
+      method: "POST",
+      body: JSON.stringify({ argument }),
+    }),
+
+  listVerdictPushbacks: (reviewId: number) =>
+    request<VerdictPushback[]>(`/reviews/${reviewId}/verdict/pushbacks`),
+
   draftLesson: (reviewId: number, threadId: number) =>
     request<LessonDraft>(`/reviews/${reviewId}/threads/${threadId}/lesson/draft`, {
       method: "POST",
@@ -299,6 +323,49 @@ export const api = {
   deleteWatch: (watchId: number) => request<void>(`/watches/${watchId}`, { method: "DELETE" }),
 
   getAnalytics: (days = 30) => request<AnalyticsResponse>(`/analytics?days=${days}`),
+
+  // Standing policies: evaluated on the watch tick, never by their own scheduler.
+  listPolicies: () => request<ReviewPolicy[]>("/policies"),
+
+  createPolicy: (payload: ReviewPolicyCreate) =>
+    request<ReviewPolicy>("/policies", { method: "POST", body: JSON.stringify(payload) }),
+
+  updatePolicy: (
+    policyId: number,
+    payload: Partial<Omit<ReviewPolicyCreate, "model">> & { model?: string },
+  ) => request<ReviewPolicy>(`/policies/${policyId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+
+  deletePolicy: (policyId: number) =>
+    request<void>(`/policies/${policyId}`, { method: "DELETE" }),
+
+  // Cross-review finding search: one normalised key per finding, owner-scoped.
+  searchFindings: (params: { q?: string; repo?: string; path?: string; since?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", params.q);
+    if (params.repo) query.set("repo", params.repo);
+    if (params.path) query.set("path", params.path);
+    if (params.since) query.set("since", params.since);
+    if (params.limit) query.set("limit", String(params.limit));
+    return request<FindingSearchResponse>(`/findings/search?${query.toString()}`);
+  },
+
+  similarFindings: (reviewId: number, threadId: number) =>
+    request<SimilarFindingsResponse>(`/findings/similar/${reviewId}/${threadId}`),
+
+  // Side-by-side comparison: a sibling review of the same PR, priced before it starts.
+  estimateComparison: (reviewId: number, model: string) =>
+    request<ComparisonEstimate>(
+      `/reviews/${reviewId}/comparison/estimate?model=${encodeURIComponent(model)}`,
+    ),
+
+  compareReview: (reviewId: number, model: string) =>
+    request<CreateReviewAccepted>(`/reviews/${reviewId}/compare`, {
+      method: "POST",
+      body: JSON.stringify({ model }),
+    }),
+
+  getComparison: (reviewId: number) =>
+    request<ComparisonRead>(`/reviews/${reviewId}/comparison`),
 
   listModels: () => request<ModelCatalog>("/models"),
 

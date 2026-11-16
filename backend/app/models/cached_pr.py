@@ -96,6 +96,11 @@ class CachedPR(Base):
     linked_review_id: Mapped[int | None] = mapped_column(
         ForeignKey("code_reviews.id", ondelete="SET NULL"), nullable=True, index=True
     )
+    # Compare-and-set claim: a policy tick sets this before creating a review, so two ticks
+    # cannot both start one for this PR. Stale claims are ignored after a short window.
+    policy_claim_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_synced_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )

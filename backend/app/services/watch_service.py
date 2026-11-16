@@ -29,6 +29,7 @@ from app.db.session import SessionLocal
 from app.models.review import CodeReview
 from app.models.watch import ReviewTrigger, ReviewWatch
 from app.services import keys_service, vcs
+from app.services import policy_service
 from app.services.review_pipeline import PipelineError, create_running_review, run_ingest
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,10 @@ class TickResult:
     skipped: int = 0
     started: list[int] = field(default_factory=list)
     failed: list[dict] = field(default_factory=list)
+    # Standing policies are evaluated on the same tick; these mirror the review ids they start.
+    policy_started: list[int] = field(default_factory=list)
+    policy_skipped: int = 0
+    policy_failed: list[dict] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -60,6 +65,9 @@ class TickResult:
             "skipped": self.skipped,
             "started": list(self.started),
             "failed": list(self.failed),
+            "policy_started": list(self.policy_started),
+            "policy_skipped": self.policy_skipped,
+            "policy_failed": list(self.policy_failed),
         }
 
 
@@ -165,6 +173,13 @@ async def tick(max_reviews: int | None = None) -> TickResult:
             result.failed.append({"watch_id": watch_id, "error": error})
         else:
             result.skipped += 1
+
+    # Policies run after the watches, sharing the tick and not a second scheduler. Their own
+    # `max_active` and per-tick cap keep the spend bounded.
+    policies = await policy_service.evaluate()
+    result.policy_started = policies.started
+    result.policy_skipped = policies.skipped
+    result.policy_failed = policies.failed
     return result
 
 

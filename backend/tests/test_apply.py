@@ -118,8 +118,68 @@ def test_approve_with_nothing_pending_twice_is_409(client, monkeypatch):
 
     first = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
     assert first.status_code == 200, first.text
+    assert first.json()["review"]["approval_published"] is True
+
     again = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
     assert again.status_code == 409
+    assert "already approved" in again.json()["detail"]
+
+
+def test_an_applied_comment_review_can_still_approve(client, monkeypatch):
+    """The reviewer read the discussion, the opinion moved to APPROVE, and the PR is still open.
+
+    Publishing findings earlier must not lock the approval: an approval is a state change on the
+    pull request, not pending content.
+    """
+    review = seed_review(client, monkeypatch)
+    first_thread = review["threads"][0]
+    accepted = client.post(
+        f"/api/reviews/{review['id']}/rounds/{first_thread['rounds'][0]['id']}/decision",
+        json={"decision": "accept", "summary": "**High** — bounded query, verified."},
+    )
+    assert accepted.status_code == 200, accepted.text
+
+    calls = stub_post(
+        monkeypatch,
+        [
+            {"html_url": "https://github.com/octo/example/pull/123#pullrequestreview-1"},
+            {"html_url": "https://github.com/octo/example/pull/123#pullrequestreview-2"},
+        ],
+    )
+    commented = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "COMMENT"})
+    assert commented.status_code == 200, commented.text
+    assert commented.json()["review"]["status"] == "applied"
+    assert commented.json()["review"]["approval_published"] is False
+
+    approved = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["comments_posted"] == 0
+    assert calls[-1]["payload"]["event"] == "APPROVE"
+    assert calls[-1]["payload"]["comments"] == []
+    assert approved.json()["review"]["verdict"] == "APPROVE"
+    assert approved.json()["review"]["approval_published"] is True
+    assert approved.json()["review"]["status"] == "applied"
+
+    # And once approved, a third bare approval is refused rather than duplicated.
+    duplicate = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "APPROVE"})
+    assert duplicate.status_code == 409
+
+
+def test_an_applied_review_still_refuses_a_bare_comment(client, monkeypatch):
+    """The approval exception is only for approvals: a comment with nothing pending stays a 409."""
+    review = seed_review(client, monkeypatch)
+    first_thread = review["threads"][0]
+    client.post(
+        f"/api/reviews/{review['id']}/rounds/{first_thread['rounds'][0]['id']}/decision",
+        json={"decision": "accept", "summary": "**High** — bounded query, verified."},
+    )
+    stub_post(monkeypatch, [{"html_url": "https://github.com/octo/example/pull/123#pullrequestreview-3"}])
+    assert client.post(f"/api/reviews/{review['id']}/apply", json={"event": "COMMENT"}).status_code == 200
+
+    response = client.post(f"/api/reviews/{review['id']}/apply", json={"event": "COMMENT"})
+
+    assert response.status_code == 409
+    assert "Nothing is pending" in response.json()["detail"]
 
 
 def test_approve_with_a_queued_reply_posts_no_review(client, monkeypatch):

@@ -39,6 +39,12 @@ text, so backups stay operator-only files and are never attached to a review or 
 - Never print, log or commit a token, key, password or session cookie; redact as `[REDACTED]`.
   `.env` is gitignored and `.env.example` holds placeholders only.
 - **Nothing leaves the machine** except the diff/prompts sent to the chosen provider.
+- **Local agent sessions are opt-in evidence, not ingestion.** The skill-evolution analysis reads
+  `~/.claude/projects`, `~/.codex/sessions` or `~/.hermes/state.db` only when the operator picks
+  that source in the dialog, and only the last 30 days. The stores are opened read-only, excerpts
+  are capped and scored, and nothing is persisted; the excerpts leave the machine only inside that
+  one model prompt, like the review history. Never scan a session store on a page load or a
+  background tick.
 - `CREDENTIALS_ENCRYPTION_KEY` lives in the environment only — never in the database, a migration, a
   commit or a log line. A deployment sets it in its project environment and exports it for the
   release migration; losing it means re-entering every credential.

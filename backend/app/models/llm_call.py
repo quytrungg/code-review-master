@@ -36,8 +36,11 @@ class LLMPurpose:
     EVOLVE = "evolve"
     # The push-back lesson draft (phase 36): one call over a rejected finding, beta-gated.
     LESSON = "lesson"
+    # The verdict push-back (phase 44): one call re-reading the review against the reviewer's
+    # argument. Separate from VERDICT so a contested opinion is visible in the spend split.
+    PUSHBACK = "pushback"
 
-    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE, POLISH, EVOLVE, LESSON)
+    ALL = (INGEST, DISCUSS, VERDICT, SUMMARISE, POLISH, EVOLVE, LESSON, PUSHBACK)
 
 
 class LLMCall(Base):
@@ -58,7 +61,7 @@ class LLMCall(Base):
         ForeignKey("review_threads.id", ondelete="SET NULL"), nullable=True
     )
     purpose: Mapped[str] = mapped_column(String(16), nullable=False)
-    # Model-id prefix (claude, openai, ollama-cloud, ollama-local) and the bare model name.
+    # Model-id prefix (claude, openai, opencode, ollama-cloud, ollama-local) and the bare model name.
     provider: Mapped[str] = mapped_column(String(16), nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     # NULL, never 0, when the provider or model does not report a count.

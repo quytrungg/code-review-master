@@ -38,9 +38,8 @@ from app.models.review import (
     ReviewThread,
     RoundStatus,
     ThreadOrigin,
-    ThreadRound,
 )
-from app.services import keys_service, llm_service, skills_service
+from app.services import agent_sessions_service, keys_service, llm_service, skills_service
 from app.services.llm_service import LLMError
 
 logger = logging.getLogger(__name__)
@@ -124,6 +123,7 @@ class AnalysisResult:
     summary: str
     proposals: list[Proposal]
     digest: HistoryDigest
+    session_digest: agent_sessions_service.SessionDigest | None = None
     warnings: list[str] = field(default_factory=list)
 
 
@@ -301,7 +301,8 @@ META_CONTRACT = """
 # Task
 
 You are curating a code-review guideline library. Below are the current rules and the recent
-review history that shows where those rules misfired. Propose concrete edits to the rule files.
+review history (and, when present, the developer's recent coding-agent sessions) that show where
+those rules misfired. Propose concrete edits to the rule files.
 
 Return ONLY a JSON object — no prose, no markdown fences, no text before or after it:
 
@@ -328,6 +329,8 @@ Rules:
   change only what the history shows was wrong, ambiguous or missing.
 - Propose a change only when the history supports it. Name the review ids that motivated it in
   `evidenceReviewIds` — an empty list means "a general improvement", and you should rarely need it.
+- Evidence from the agent-session section has no review id: leave `evidenceReviewIds` empty and
+  describe the session pattern in the rationale instead.
 - Do not restate the rules you are editing. Edit them.
 - If the rules are already matching the team's review patterns, return an EMPTY
   `fileModifications` array and explain in `analysisSummary` why no change is needed. That is a
@@ -336,8 +339,12 @@ Rules:
 """.strip()
 
 
-def build_meta_prompt(files: dict[str, str], digest: HistoryDigest) -> tuple[str, str]:
-    """The system prompt (role + contract) and the user prompt (rules + history + task)."""
+def build_meta_prompt(
+    files: dict[str, str],
+    digest: HistoryDigest,
+    session_digest: agent_sessions_service.SessionDigest | None = None,
+) -> tuple[str, str]:
+    """The system prompt (role + contract) and the user prompt (rules + evidence + task)."""
     system_prompt = "\n".join(
         [
             "You are a principal software engineer and the rule curator for this team's code-review",
@@ -383,12 +390,41 @@ def build_meta_prompt(files: dict[str, str], digest: HistoryDigest) -> tuple[str
             f"- {digest.interaction_count} thread(s) where the reviewer pushed back",
             "",
             digest.text,
+        ]
+    )
+    if session_digest is not None:
+        parts.extend(
+            [
+                "",
+                f"# Agent coding sessions — last {session_digest.days} days"
+                f" ({agent_sessions_service.label_for(session_digest.source)})",
+                "",
+                f"- {session_digest.sessions} session(s) scanned in the chosen folder",
+                f"- {session_digest.exchanges} correction exchange(s) kept",
+                "",
+                session_digest.text,
+            ]
+        )
+    parts.extend(
+        [
             "",
             "# Your task",
             "",
             "Read the history above. Each line is one finding the model raised and what the reviewer",
-            "said about it. Propose the rule edits that would stop those findings from being",
-            "raised again, and nothing else.",
+            "said about it.",
+        ]
+    )
+    if session_digest is not None:
+        parts.append(
+            "The agent-session lines are corrections the developer made to their own CLI coding"
+        )
+        parts.append(
+            "assistant; treat them as the same kind of friction, not as a different product."
+        )
+    parts.extend(
+        [
+            "Propose the rule edits that would stop those findings from being raised again, and",
+            "nothing else.",
         ]
     )
     return system_prompt, "\n".join(parts)
@@ -528,6 +564,7 @@ async def analyse(
     foundation_id: str,
     days: int,
     model_id: str,
+    session_source: agent_sessions_service.SessionSourceId | None = None,
 ) -> AnalysisResult:
     """Run the whole analysis: aggregate, curate with the model, validate the proposals."""
     try:
@@ -545,7 +582,10 @@ async def analyse(
     except skills_service.SkillError as exc:
         raise EvolutionError(exc.detail, exc.status_code) from exc
     digest = aggregate_history(db, user_id, foundation_id, days)
-    system_prompt, user_prompt = build_meta_prompt(files, digest)
+    session_digest = (
+        agent_sessions_service.summarise(session_source, days) if session_source else None
+    )
+    system_prompt, user_prompt = build_meta_prompt(files, digest, session_digest)
 
     try:
         outcome = await llm_service.generate(
@@ -565,6 +605,8 @@ async def analyse(
         raise EvolutionError(str(exc), 502) from exc
 
     proposals, warnings = parse_proposals(document, files, digest.review_ids)
+    if session_digest is not None:
+        warnings.extend(session_digest.warnings)
 
     summary = ""
     if isinstance(document, dict):
@@ -581,5 +623,9 @@ async def analyse(
         )
 
     return AnalysisResult(
-        summary=summary, proposals=proposals, digest=digest, warnings=warnings
+        summary=summary,
+        proposals=proposals,
+        digest=digest,
+        session_digest=session_digest,
+        warnings=warnings,
     )
