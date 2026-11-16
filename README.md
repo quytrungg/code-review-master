@@ -12,7 +12,7 @@ Use **Ollama Cloud** (default), **Claude**, **OpenAI/Codex**, **OpenCode** (Zen 
 - **Existing conversations included** — import current PR comments, sync new replies, and manage AI findings and human discussions in one workspace.
 - **Publish only what you approve** — accepted findings become one review with inline comments; rejected or withdrawn findings stay unpublished.
 - **Follow new pushes automatically** — watch a PR and review only the delta when its head commit changes.
-- **Your standards can improve themselves** — let a model read your last 30 days of pushbacks, optionally add one local Claude Code, Codex or Hermes session store, propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
+- **Your standards can improve themselves** — let a model read your last 30 days of reviews and pushbacks in their comment threads, propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
 - **Understand model usage** — track calls, tokens, latency, estimated cost, acceptance rate, and push-back rate per review and across models.
 - **Catch what a regex knows for certain** — optional deterministic packs flag committed token prefixes, private-key headers, conflict markers, debugger statements, `console.log`, and focused tests before the model runs, at zero tokens.
 - **Let the queue move itself** — a standing policy reviews PRs in a repository that are waiting on you, on the same tick that watches already use.
