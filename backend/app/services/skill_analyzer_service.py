@@ -50,6 +50,8 @@ EXCERPT_CHARS = 240
 MAX_THREAD_SUMMARY_CHARS = 700
 # Cap on the proposals returned to the browser.
 MAX_PROPOSALS = 20
+# One proposal is a handful of targeted edits; more than this is a rewrite the contract discourages.
+MAX_EDITS_PER_PROPOSAL = 40
 
 
 class EvolutionError(Exception):
@@ -314,8 +316,25 @@ Return ONLY a JSON object — no prose, no markdown fences, no text before or af
       "action": "modify",
       "rationale": "why this change, in one or two sentences",
       "evidenceReviewIds": [14, 22],
-      "originalContent": "the file's current content, copied verbatim",
-      "proposedContent": "the file's content after your change"
+      "edits": [
+        {
+          "oldText": "an exact sentence copied verbatim from the current file",
+          "newText": "the text that replaces it"
+        }
+      ]
+    },
+    {
+      "filePath": "references/new-topic.md",
+      "action": "create",
+      "rationale": "why this file is needed, in one or two sentences",
+      "evidenceReviewIds": [22],
+      "content": "the complete new file"
+    },
+    {
+      "filePath": "references/obsolete.md",
+      "action": "delete",
+      "rationale": "why the file should go, in one or two sentences",
+      "evidenceReviewIds": [14]
     }
   ]
 }
@@ -324,9 +343,17 @@ Rules:
 - `action` is "modify" (the file exists), "create" (a new file) or "delete" (the file should go).
 - `filePath` must be copied from the file list below, or be a new `*.md` path for "create".
   Never invent a path, and never write outside the library.
-- `originalContent` must be the file's current content, copied verbatim. For "create" it is "".
-- `proposedContent` is the complete new content of the file. Keep every rule that still holds;
-  change only what the history shows was wrong, ambiguous or missing.
+- For "modify", return an `edits` list and never the whole file. Each `oldText` must be copied
+  verbatim from the current file and appear exactly once; `newText` replaces it. Use the fewest,
+  smallest edits that express the rule change. A file that needs rewriting on almost every line is
+  a reason to propose a new file instead.
+- For "create", return the complete new file in `content`.
+- For "delete", return no content.
+- Return at most one proposal per file; put every change to that file in its one `edits` list.
+- Propose changes only to files whose content is shown above. A file listed as left out of the
+  prompt cannot be edited safely — do not guess its content or name it in a proposal.
+- If an `oldText` cannot be copied exactly from the current file, drop that edit rather than
+  inventing text; an edit that does not match once is discarded with the whole proposal.
 - Propose a change only when the history supports it. Name the review ids that motivated it in
   `evidenceReviewIds` — an empty list means "a general improvement", and you should rarely need it.
 - Evidence from the agent-session section has no review id: leave `evidenceReviewIds` empty and
@@ -378,7 +405,9 @@ def build_meta_prompt(
     if skipped:
         parts.append(
             f"({len(skipped)} further file(s) were left out of this prompt because of its size: "
-            f"{', '.join(skipped[:8])})"
+            f"{', '.join(skipped[:8])}"
+            + (" …" if len(skipped) > 8 else "")
+            + ". Do not propose changes to them: their content is not visible.)"
         )
     parts.extend(
         [
@@ -444,6 +473,36 @@ def _unified_diff(path: str, original: str, proposed: str) -> str:
     return "".join(diff)
 
 
+def _apply_edits(original: str, edits: list) -> tuple[str, str | None]:
+    """Apply exact-match replacements in order. Returns `(content, problem)`.
+
+    Every `oldText` must occur exactly once in the content at the moment it is applied, so an
+    ambiguous or stale edit drops the whole proposal instead of guessing where it belonged.
+    """
+    if len(edits) > MAX_EDITS_PER_PROPOSAL:
+        return original, f"it has {len(edits)} edits (the limit is {MAX_EDITS_PER_PROPOSAL})"
+
+    current = original
+    for index, edit in enumerate(edits, start=1):
+        if not isinstance(edit, dict):
+            return original, f"edit {index} is not an object"
+        old_text = edit.get("oldText")
+        new_text = edit.get("newText")
+        if not isinstance(old_text, str) or not old_text:
+            return original, f"edit {index} has no oldText"
+        if not isinstance(new_text, str):
+            return original, f"edit {index} has no newText"
+        occurrences = current.count(old_text)
+        if occurrences == 0:
+            return original, f"edit {index}'s oldText does not appear in the file"
+        if occurrences > 1:
+            return original, (
+                f"edit {index}'s oldText appears {occurrences} times; it must be unique"
+            )
+        current = current.replace(old_text, new_text, 1)
+    return current, None
+
+
 def parse_proposals(
     document, files: dict[str, str], review_ids: list[int]
 ) -> tuple[list[Proposal], list[str]]:
@@ -480,8 +539,12 @@ def parse_proposals(
             continue
         action = cast(Literal["modify", "create", "delete"], action)
 
-        proposed = entry.get("proposedContent")
-        proposed = proposed if isinstance(proposed, str) else ""
+        edits_raw = entry.get("edits")
+        edits = edits_raw if isinstance(edits_raw, list) else []
+        proposed_raw = entry.get("proposedContent")
+        proposed = proposed_raw if isinstance(proposed_raw, str) else ""
+        content_raw = entry.get("content")
+        content = content_raw if isinstance(content_raw, str) else ""
         model_original = entry.get("originalContent")
         model_original = model_original if isinstance(model_original, str) else ""
 
@@ -507,8 +570,38 @@ def parse_proposals(
                 "current file."
             )
 
+        existing_index = next(
+            (index for index, item in enumerate(proposals) if item.file_path == relative), None
+        )
+        base_content = (
+            proposals[existing_index].proposed_content
+            if existing_index is not None
+            and proposals[existing_index].action == "modify"
+            and action == "modify"
+            else original
+        )
+
         if action == "delete":
             proposed = ""
+        elif action == "modify":
+            if edits:
+                proposed, problem = _apply_edits(base_content, edits)
+                if problem:
+                    warnings.append(f"Dropped the proposal for '{relative}': {problem}.")
+                    continue
+            elif not proposed:
+                warnings.append(
+                    f"Dropped the proposal for '{relative}': it has no edits."
+                )
+                continue
+        else:  # create
+            proposed = content or proposed
+            if not proposed.strip():
+                warnings.append(
+                    f"Dropped the proposal for '{relative}': the new content is empty."
+                )
+                continue
+
         if action != "delete" and proposed == original:
             warnings.append(f"Dropped the proposal for '{relative}': it changes nothing.")
             continue
@@ -534,6 +627,41 @@ def parse_proposals(
 
         rationale = entry.get("rationale")
         rationale = rationale.strip() if isinstance(rationale, str) else ""
+
+        if existing_index is not None:
+            existing = proposals[existing_index]
+            if existing.action == "modify" and action == "modify" and edits:
+                if proposed == existing.proposed_content:
+                    warnings.append(
+                        f"Dropped a second proposal for '{relative}': it changes nothing."
+                    )
+                    continue
+                merged_evidence = list(existing.evidence_review_ids)
+                merged_evidence.extend(
+                    item for item in evidence if item not in merged_evidence
+                )
+                merged_rationale = existing.rationale
+                if rationale and rationale not in merged_rationale:
+                    merged_rationale = (
+                        f"{merged_rationale} {rationale}".strip()
+                        if merged_rationale
+                        else rationale
+                    )
+                proposals[existing_index] = Proposal(
+                    file_path=relative,
+                    action="modify",
+                    rationale=merged_rationale,
+                    evidence_review_ids=merged_evidence,
+                    original_content=existing.original_content,
+                    proposed_content=proposed,
+                    unified_diff=_unified_diff(relative, existing.original_content, proposed),
+                )
+                continue
+            warnings.append(
+                f"Dropped a second proposal for '{relative}': one proposal per file is "
+                "supported."
+            )
+            continue
 
         proposals.append(
             Proposal(
@@ -587,6 +715,14 @@ async def analyse(
     )
     system_prompt, user_prompt = build_meta_prompt(files, digest, session_digest)
 
+    settings = get_settings()
+    # Verified on the OpenCode relay: "none" keeps the whole output budget for the JSON answer.
+    # Other providers use their defaults; Claude and OpenAI need their own verified knob.
+    reasoning_effort = (
+        settings.llm_evolve_reasoning_effort.strip() or None
+        if model.provider == llm_service.OPENCODE
+        else None
+    )
     try:
         outcome = await llm_service.generate(
             credentials,
@@ -595,6 +731,8 @@ async def analyse(
             user_prompt,
             json_mode=True,
             purpose=LLMPurpose.EVOLVE,
+            max_tokens=settings.llm_evolve_max_tokens,
+            reasoning_effort=reasoning_effort,
         )
     except LLMError as exc:
         raise EvolutionError(str(exc), 502) from exc

@@ -114,6 +114,8 @@ def _stub_model(monkeypatch, payload: dict) -> list[dict]:
                 "user": user_prompt,
                 "model": model.id,
                 "purpose": kwargs.get("purpose"),
+                "max_tokens": kwargs.get("max_tokens"),
+                "reasoning_effort": kwargs.get("reasoning_effort"),
             }
         )
         return json.dumps(payload)
@@ -192,6 +194,19 @@ def test_aggregation_respects_the_window(client, monkeypatch):
     assert digest.interaction_count == 0
 
 
+def test_the_prompt_marks_files_left_out_as_untouchable(client, monkeypatch):
+    monkeypatch.setattr(get_settings(), "evolution_skill_max_chars", 60)
+    files = {"references/small.md": "short rule", "references/big.md": "y" * 200}
+
+    _, user_prompt = skill_analyzer_service.build_meta_prompt(
+        files, skill_analyzer_service.HistoryDigest(days=30)
+    )
+
+    assert "references/big.md" in user_prompt
+    assert "Do not propose changes to them" in user_prompt
+    assert "references/small.md" in user_prompt
+
+
 # -------------------------------------------------------------------------- the analysis
 
 
@@ -246,6 +261,184 @@ def test_analysis_returns_a_validated_proposal_with_a_diff(client, monkeypatch):
     assert "rule curator" in captured[0]["system"]
     assert "staging mock does not sign keys" in captured[0]["user"]
     assert captured[0]["purpose"] == "evolve"
+
+
+def test_analysis_applies_targeted_edits_and_passes_the_evolve_budget(client, monkeypatch):
+    _provision(client)
+    captured = _stub_model(
+        monkeypatch,
+        {
+            "analysisSummary": "Staging mocks were flagged again.",
+            "fileModifications": [
+                {
+                    "filePath": "references/ruby.md",
+                    "action": "modify",
+                    "rationale": "Staging mock keys are not signed.",
+                    "evidenceReviewIds": [1],
+                    "edits": [
+                        {
+                            "oldText": "Be careful.",
+                            "newText": (
+                                "Be careful.\n\n## Staging mocks\n\n"
+                                "Do not flag unsigned staging keys."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/skills/{FOUNDATION}/analyze-history",
+        json={"days": 30, "model": "ollama-local:llama3"},
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()["file_modifications"][0]
+
+    # The edit was applied to the file on disk; the response still carries full content + diff.
+    assert proposal["original_content"] == "# Ruby rules\n\nBe careful."
+    assert proposal["proposed_content"] == (
+        "# Ruby rules\n\nBe careful.\n\n## Staging mocks\n\nDo not flag unsigned staging keys."
+    )
+    assert "+## Staging mocks" in proposal["unified_diff"]
+    # The prompt asks for edits, not a copy of the whole file.
+    assert "edits" in captured[0]["system"]
+    assert "proposedContent" not in captured[0]["system"]
+    assert captured[0]["max_tokens"] == get_settings().llm_evolve_max_tokens
+    assert captured[0]["reasoning_effort"] is None
+
+
+def test_analysis_uses_the_opencode_reasoning_knob(client, monkeypatch):
+    create_llm_key(client, provider="opencode", api_key="oc-key")
+    captured = _stub_model(
+        monkeypatch,
+        {"analysisSummary": "No changes.", "fileModifications": []},
+    )
+
+    response = client.post(
+        f"/api/skills/{FOUNDATION}/analyze-history",
+        json={"days": 30, "model": "opencode:deepseek-v4.1-flash"},
+    )
+    assert response.status_code == 200, response.text
+    assert captured[0]["max_tokens"] == get_settings().llm_evolve_max_tokens
+    assert captured[0]["reasoning_effort"] == get_settings().llm_evolve_reasoning_effort
+
+
+def test_analysis_drops_an_ambiguous_or_stale_edit(client, monkeypatch):
+    _provision(client)
+    _stub_model(
+        monkeypatch,
+        {
+            "analysisSummary": "Two unusable edits.",
+            "fileModifications": [
+                {
+                    "filePath": "references/ruby.md",
+                    "action": "modify",
+                    "rationale": "ambiguous oldText",
+                    "evidenceReviewIds": [],
+                    # "e" occurs many times in the fixture file.
+                    "edits": [{"oldText": "e", "newText": "E"}],
+                },
+                {
+                    "filePath": "references/ruby.md",
+                    "action": "modify",
+                    "rationale": "stale oldText",
+                    "evidenceReviewIds": [],
+                    "edits": [{"oldText": "A sentence that is not there.", "newText": "x"}],
+                },
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/skills/{FOUNDATION}/analyze-history",
+        json={"days": 30, "model": "ollama-local:llama3"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["file_modifications"] == []
+    assert any("must be unique" in warning for warning in body["warnings"])
+    assert any("does not appear in the file" in warning for warning in body["warnings"])
+
+
+def test_analysis_creates_a_file_from_content(client, monkeypatch):
+    _provision(client)
+    _stub_model(
+        monkeypatch,
+        {
+            "analysisSummary": "A new rule file.",
+            "fileModifications": [
+                {
+                    "filePath": "references/evolution.md",
+                    "action": "create",
+                    "rationale": "The rule has no home yet.",
+                    "evidenceReviewIds": [],
+                    "content": "# Evolution\n\nNew rule.\n",
+                }
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/skills/{FOUNDATION}/analyze-history",
+        json={"days": 30, "model": "ollama-local:llama3"},
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()["file_modifications"][0]
+    assert proposal["action"] == "create"
+    assert proposal["original_content"] == ""
+    assert proposal["proposed_content"] == "# Evolution\n\nNew rule.\n"
+    assert "+# Evolution" in proposal["unified_diff"]
+
+
+def test_analysis_merges_two_proposals_for_one_file(client, monkeypatch):
+    _provision(client)
+    _stub_model(
+        monkeypatch,
+        {
+            "analysisSummary": "The model split one file into two proposals.",
+            "fileModifications": [
+                {
+                    "filePath": "references/ruby.md",
+                    "action": "modify",
+                    "rationale": "first change",
+                    "evidenceReviewIds": [],
+                    "edits": [
+                        {
+                            "oldText": "Be careful.",
+                            "newText": "Be careful.\n\nRule one.",
+                        }
+                    ],
+                },
+                {
+                    "filePath": "references/ruby.md",
+                    "action": "modify",
+                    "rationale": "second change",
+                    "evidenceReviewIds": [],
+                    "edits": [
+                        {
+                            "oldText": "Rule one.",
+                            "newText": "Rule one.\n\nRule two.",
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    response = client.post(
+        f"/api/skills/{FOUNDATION}/analyze-history",
+        json={"days": 30, "model": "ollama-local:llama3"},
+    )
+    assert response.status_code == 200, response.text
+    modifications = response.json()["file_modifications"]
+    assert len(modifications) == 1
+    proposal = modifications[0]
+    assert "Rule one." in proposal["proposed_content"]
+    assert "Rule two." in proposal["proposed_content"]
+    assert "first change" in proposal["rationale"]
+    assert "second change" in proposal["rationale"]
 
 
 def test_analysis_drops_an_illegal_path_and_a_no_op(client, monkeypatch):

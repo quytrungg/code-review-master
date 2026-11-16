@@ -9,6 +9,59 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 51 — Review ingest keeps its output budget on a reasoning model — 2026-11-16
+
+Plan: `docs/plans/phase_51_plan.md`. No migration; no public API change.
+
+### Fixed
+
+- **A review failed with "OpenCode stopped at its 4096-token output limit … (4096 tokens went to
+  reasoning)".** Review ingest inherited the shared `LLM_MAX_TOKENS=4096`, so
+  `deepseek-v4.1-flash` on the OpenCode relay spent the whole completion budget thinking and
+  returned empty `content` with `finish_reason: "length"`. Review 24
+  (`Thinkei/employment-hero#84559`) hit exactly this; phase 50 had fixed it for skill evolution
+  only.
+
+### Added
+
+- **`LLM_REVIEW_MAX_TOKENS`** (default `8192`) is the output budget for every review-ingest call,
+  including each part of a large diff.
+- **`LLM_REVIEW_REASONING_EFFORT`** (default `none`) is sent to the OpenCode relay for review
+  ingest, so the findings JSON keeps the budget. Other providers are unchanged.
+
+---
+
+## Phase 50 — Evolve names its output limit, gets room, and asks for edits — 2026-11-16
+
+Plan: `docs/plans/phase_50_plan.md`. No migration; no public API change.
+
+### Fixed
+
+- **"Model returned an empty response" on skill evolution.** A reasoning model could spend the
+  whole 4,096-token output budget on `reasoning_content` and return `content: ""` with
+  `finish_reason: "length"`; the adapter ignored the stop reason and the parser reported an empty
+  response. Every transport now reads its stop reason (`finish_reason`, `done_reason`,
+  `stop_reason`) in both blocking and streaming paths and raises an actionable error naming the
+  limit, the model and how many tokens went to reasoning.
+
+### Added
+
+- **A per-call output budget.** `llm_service.generate()` / `stream()` accept `max_tokens`; skill
+  evolution uses `LLM_EVOLVE_MAX_TOKENS` (default `8192`).
+- **`LLM_EVOLVE_REASONING_EFFORT`** (default `none`) is sent to the OpenCode relay for the evolve
+  call, verified there, so the JSON answer keeps the budget. Other providers are unchanged.
+
+### Changed
+
+- **The evolve prompt asks for targeted edits.** A `modify` proposal returns
+  `edits: [{oldText, newText}]` instead of `originalContent` + `proposedContent`; `create` returns
+  `content`; `delete` returns no content. The server applies each edit to the file on disk, requires
+  every `oldText` to occur exactly once, and still returns the full `proposed_content` and
+  `unified_diff` to the workbench. Two proposals for one file are merged into one; files the prompt
+  left out for size are marked untouchable. Legacy `proposedContent` answers remain accepted.
+
+---
+
 ## Phase 49 — Evolve dialog offers review history only — 2026-11-14
 
 Plan: `docs/plans/phase_49_plan.md`. No migration; no API change (the dialog simply stops sending

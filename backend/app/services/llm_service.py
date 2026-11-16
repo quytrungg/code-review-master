@@ -131,6 +131,35 @@ def _error_class(exc: BaseException) -> str:
     return (cause or exc).__class__.__name__
 
 
+def _reasoning_tokens(body: dict | None) -> int:
+    """How many completion tokens the provider says went to reasoning, or 0."""
+    usage = (body or {}).get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    value = details.get("reasoning_tokens")
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0
+
+
+def _truncation_error(
+    label: str,
+    name: str,
+    limit: int | None,
+    body: dict | None = None,
+) -> LLMError:
+    """A truncated answer is a configuration problem, not an empty response."""
+    where = f" at its {limit}-token output limit" if limit else " at its output limit"
+    detail = f"{label} stopped{where} before finishing the answer from '{name}'"
+    reasoning = _reasoning_tokens(body)
+    if reasoning:
+        detail += f" ({reasoning} tokens went to reasoning)"
+    return LLMError(
+        detail
+        + ". Raise the output limit (LLM_EVOLVE_MAX_TOKENS for skill evolution, LLM_MAX_TOKENS "
+        "otherwise) or shorten the prompt."
+    )
+
+
 def _token(value) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
@@ -351,11 +380,17 @@ async def generate(
     purpose: str,
     review_id: int | None = None,
     thread_id: int | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResult:
     """One non-streaming completion, with the token counts and latency it reported.
 
     `json_mode` asks the provider to constrain output to JSON (Ollama's `format: json`,
     OpenAI's `response_format`). Discussion replies are prose, so they pass False.
+
+    `max_tokens` overrides the shared `LLM_MAX_TOKENS` for this call only (the skill-evolution
+    answer needs more room than a review finding). `reasoning_effort` is forwarded to
+    OpenAI-compatible transports; only the OpenCode relay has been verified to accept "none".
 
     `purpose` is the call site (`LLMPurpose`) and is required, so every call — success or failure
     — reaches the ledger with a reason attached. Recording happens after (or instead of) the
@@ -365,6 +400,7 @@ async def generate(
     so it is an error the caller sees, not a call in the ledger.
     """
     config = get_settings()
+    output_limit = max_tokens or config.llm_max_tokens
     base_url: str = ""
     headers: dict[str, str] = {}
     if model.provider == CLAUDE:
@@ -377,7 +413,7 @@ async def generate(
     try:
         if model.provider == CLAUDE:
             result = await _generate_claude(
-                credentials, model.name, system_prompt, user_prompt, config.llm_max_tokens
+                credentials, model.name, system_prompt, user_prompt, output_limit
             )
         else:
             if model.provider in (OPENAI, OPENCODE):
@@ -391,6 +427,8 @@ async def generate(
                     json_mode,
                     provider=model.provider,
                     label="OpenAI" if model.provider == OPENAI else "OpenCode",
+                    max_tokens=output_limit,
+                    reasoning_effort=reasoning_effort,
                 )
             else:
                 result = await _generate_ollama(
@@ -455,6 +493,9 @@ async def _generate_claude(
     finally:
         await client.close()
 
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        raise _truncation_error("Claude", name, max_tokens)
+
     usage = getattr(message, "usage", None)
     prompt_tokens, completion_tokens = claude_usage(
         {
@@ -486,12 +527,15 @@ async def _generate_openai(
     *,
     provider: str = OPENAI,
     label: str = "OpenAI",
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResult:
     """Chat Completions call; `provider`/`label` name the transport for the ledger and errors."""
+    limit = max_tokens or config.llm_max_tokens
     payload: dict = {
         "model": name,
         "temperature": 0,
-        "max_tokens": config.llm_max_tokens,
+        "max_tokens": limit,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -499,6 +543,8 @@ async def _generate_openai(
     }
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
 
     started = time.monotonic()
     try:
@@ -516,9 +562,14 @@ async def _generate_openai(
 
     try:
         body = response.json()
-        text = body["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError) as exc:
+        choice = body["choices"][0]
+        text = choice["message"]["content"] or ""
+        finish_reason = choice.get("finish_reason")
+    except (ValueError, KeyError, IndexError, AttributeError) as exc:
         raise LLMError(f"{label} returned an unexpected response shape") from exc
+
+    if finish_reason == "length":
+        raise _truncation_error(label, name, limit, body)
 
     prompt_tokens, completion_tokens = openai_usage(body)
     return LLMResult(
@@ -572,9 +623,16 @@ async def _generate_ollama(
 
     try:
         body = response.json()
-        text = body["message"]["content"]
+        text = body["message"]["content"] or ""
     except (ValueError, KeyError) as exc:
         raise LLMError("Ollama returned an unexpected response shape") from exc
+
+    if body.get("done_reason") == "length":
+        raise LLMError(
+            f"Ollama stopped at its output limit before finishing the answer from '{name}' "
+            "(the context window is full). Shorten the prompt or choose a model with a larger "
+            "context."
+        )
 
     # Local models often omit the eval counters entirely; the ledger keeps NULL in that case.
     prompt_tokens, completion_tokens = ollama_usage(body)
@@ -598,6 +656,8 @@ async def stream(
     purpose: str,
     review_id: int | None = None,
     thread_id: int | None = None,
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResult:
     """One streaming completion: `on_delta` receives each text chunk as it arrives.
 
@@ -607,6 +667,7 @@ async def stream(
     call records nothing: partial usage is unknowable.
     """
     config = get_settings()
+    output_limit = max_tokens or config.llm_max_tokens
     base_url: str = ""
     headers: dict[str, str] = {}
     if model.provider == CLAUDE:
@@ -619,7 +680,7 @@ async def stream(
     try:
         if model.provider == CLAUDE:
             result = await _stream_claude(
-                credentials, model.name, system_prompt, user_prompt, config.llm_max_tokens,
+                credentials, model.name, system_prompt, user_prompt, output_limit,
                 on_delta,
             )
         elif model.provider in (OPENAI, OPENCODE):
@@ -633,6 +694,8 @@ async def stream(
                 on_delta,
                 provider=model.provider,
                 label="OpenAI" if model.provider == OPENAI else "OpenCode",
+                max_tokens=output_limit,
+                reasoning_effort=reasoning_effort,
             )
         else:
             result = await _stream_ollama(
@@ -717,6 +780,13 @@ async def _stream_ollama(
     except httpx.HTTPError as exc:
         raise LLMError(f"Could not reach Ollama at {base_url}: {exc.__class__.__name__}") from exc
 
+    if terminal.get("done_reason") == "length":
+        raise LLMError(
+            f"Ollama stopped at its output limit before finishing the answer from '{name}' "
+            "(the context window is full). Shorten the prompt or choose a model with a larger "
+            "context."
+        )
+
     prompt_tokens, completion_tokens = ollama_usage(terminal)
     return LLMResult(
         text="".join(parts),
@@ -739,12 +809,15 @@ async def _stream_openai(
     *,
     provider: str = OPENAI,
     label: str = "OpenAI",
+    max_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> LLMResult:
     """OpenAI SSE stream: `data:` chunks, usage on the terminal frame, `data: [DONE]` ends."""
+    limit = max_tokens or config.llm_max_tokens
     payload: dict = {
         "model": name,
         "temperature": 0,
-        "max_tokens": config.llm_max_tokens,
+        "max_tokens": limit,
         "stream": True,
         # Usage arrives on a final choice-less chunk only when this is set.
         "stream_options": {"include_usage": True},
@@ -753,11 +826,15 @@ async def _stream_openai(
             {"role": "user", "content": user_prompt},
         ],
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
 
     started = time.monotonic()
     parts: list[str] = []
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    finish_reason: str | None = None
+    usage_body: dict | None = None
     try:
         async with httpx.AsyncClient(timeout=config.llm_timeout_s) as client:
             async with client.stream(
@@ -787,14 +864,19 @@ async def _stream_openai(
                         raise LLMError(f"{label} returned an unexpected response shape") from exc
                     choices = body.get("choices") or []
                     if choices:
+                        finish_reason = choices[0].get("finish_reason") or finish_reason
                         chunk = (choices[0].get("delta") or {}).get("content") or ""
                         if chunk:
                             parts.append(chunk)
                             on_delta(chunk)
                     if body.get("usage"):
+                        usage_body = body
                         prompt_tokens, completion_tokens = openai_usage(body)
     except httpx.HTTPError as exc:
         raise LLMError(f"Could not reach {label} at {base_url}: {exc.__class__.__name__}") from exc
+
+    if finish_reason == "length":
+        raise _truncation_error(label, name, limit, usage_body)
 
     return LLMResult(
         text="".join(parts),
@@ -843,6 +925,9 @@ async def _stream_claude(
     finally:
         await client.close()
 
+    if getattr(message, "stop_reason", None) == "max_tokens":
+        raise _truncation_error("Claude", name, max_tokens)
+
     usage = getattr(message, "usage", None)
     prompt_tokens, completion_tokens = claude_usage(
         {
@@ -875,10 +960,16 @@ class ReviewResult:
 def _load_payload(text: str):
     """First parsable JSON value in `text`, tolerating fences and surrounding prose."""
     if text is None:
-        raise LLMError("Model returned an empty response")
+        raise LLMError(
+            "The model returned an empty response. It may have spent its output budget on "
+            "reasoning; check the provider's limit and reasoning settings."
+        )
     raw = text.strip()
     if not raw:
-        raise LLMError("Model returned an empty response")
+        raise LLMError(
+            "The model returned an empty response. It may have spent its output budget on "
+            "reasoning; check the provider's limit and reasoning settings."
+        )
 
     candidates: list[str] = []
     fence = FENCE_RE.search(raw)

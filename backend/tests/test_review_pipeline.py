@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from app.core.config import get_settings
 from app.services import github_service, llm_service
 from app.services.pull_request import PullRequestInfo
 from tests.fixtures import PR_URL, SAMPLE_DIFF, llm_result, provision
@@ -68,6 +69,52 @@ def configure(monkeypatch, llm_payload: str, comments=None):
 
 async def _result(payload: str):
     return llm_result(payload)
+
+
+def configure_capturing(monkeypatch, llm_payload: str, calls: list[dict]):
+    """Like `configure`, but records the kwargs the pipeline sends to `generate`."""
+    monkeypatch.setattr(github_service, "fetch_pr", fake_fetch_pr_async)
+    monkeypatch.setattr(github_service, "fetch_diff", fake_fetch_diff)
+
+    async def fetch_comments(token, repo_full_name, number, base_url=None):
+        return []
+
+    monkeypatch.setattr(github_service, "fetch_review_comments", fetch_comments)
+
+    async def fake_generate(*args, **kwargs):
+        calls.append(kwargs)
+        return llm_result(llm_payload)
+
+    monkeypatch.setattr(llm_service, "generate", fake_generate)
+
+
+def test_opencode_ingest_uses_the_review_budget_and_disables_reasoning(client, monkeypatch):
+    from tests.conftest import start_review
+
+    calls: list[dict] = []
+    configure_capturing(monkeypatch, json.dumps(FINDINGS), calls)
+    provision(client, llm="opencode", api_key="oc-test-key")
+
+    body = start_review(client, PR_URL, "opencode:deepseek-v4.1-flash")
+
+    assert body["status"] == "draft"
+    assert calls, "the pipeline made no model call"
+    assert calls[0]["max_tokens"] == get_settings().llm_review_max_tokens
+    assert calls[0]["reasoning_effort"] == "none"
+
+
+def test_other_providers_keep_their_reasoning_default(client, monkeypatch):
+    from tests.conftest import start_review
+
+    calls: list[dict] = []
+    configure_capturing(monkeypatch, json.dumps(FINDINGS), calls)
+    provision(client)
+
+    start_review(client, PR_URL, "ollama-local:llama3")
+
+    assert calls, "the pipeline made no model call"
+    assert calls[0]["max_tokens"] == get_settings().llm_review_max_tokens
+    assert calls[0]["reasoning_effort"] is None
 
 
 def test_ingest_creates_anchored_threads(client, monkeypatch):

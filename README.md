@@ -55,6 +55,8 @@ A typical session looks like this:
    same pull request once.
 6. Optionally watch the PR so later pushes receive a linked delta review.
 
+Review ingest has its own output budget (`LLM_REVIEW_MAX_TOKENS`, default `8192`) and disables reasoning on the OpenCode relay, so a reasoning model spends the call writing findings instead of deliberation.
+
 ## Requirements
 
 - Python 3.12 and Node.js 18+
@@ -104,7 +106,7 @@ Settings also has a **Beta features** card: experiments in development, switched
 
 Two more Settings cards have nothing to do with betas. **Deterministic checks** switches on the pre-pass packs (off by default): a matching line becomes an ordinary finding, discussable and publishable, and the model is told not to repeat it. **Standing policies** reviews PRs in a repository as they arrive in your inbox, at most *N* at a time and only for the involvement you choose; they run on the watch tick, so a deployment with no tick runs none.
 
-The **Skills** tab has **Evolve from review history** in its header. The dialog picks the foundation and the model; the evidence is the last 30 days of review history — past reviews and the corrections you left in their comment threads. Nothing else is read, so the analysis works the same locally and on a hosted deployment. (The backend can still add a local CLI-agent folder to the prompt through `POST /api/skills/{foundation}/analyze-history` with `session_source`, but the dialog no longer offers it.)
+The **Skills** tab has **Evolve from review history** in its header. The dialog picks the foundation and the model; the evidence is the last 30 days of review history — past reviews and the corrections you left in their comment threads. Nothing else is read, so the analysis works the same locally and on a hosted deployment. (The backend can still add a local CLI-agent folder to the prompt through `POST /api/skills/{foundation}/analyze-history` with `session_source`, but the dialog no longer offers it.) The analysis asks the model for **targeted edits** (`oldText` → `newText`) rather than a copy of every file, and it has its own output budget (`LLM_EVOLVE_MAX_TOKENS`) with reasoning disabled on the OpenCode relay, so a reasoning model cannot spend the whole answer on deliberation.
 
 Credentials are encrypted at rest when `CREDENTIALS_ENCRYPTION_KEY` is configured. Generate a key with:
 

@@ -59,10 +59,20 @@ class Settings(BaseSettings):
     # return a full set, and a review nobody can read is not a better review.
     review_max_findings: int = 60
     llm_max_tokens: int = 4096
+    # Review ingest (phase 51): a reasoning model can spend the shared budget before writing the
+    # findings JSON and return empty content with `finish_reason: length` (review 24). Reviews get
+    # their own floor; `reasoning_effort: none` is sent only to the OpenCode relay, which accepts it.
+    llm_review_max_tokens: int = 8192
+    llm_review_reasoning_effort: str = "none"
     # Skill evolution (phase 34): the meta-analysis reads the foundation's rules and the last
     # 30 days of review history. Both are capped so one prompt cannot outgrow the context.
     evolution_skill_max_chars: int = 60_000
     evolution_history_max_chars: int = 24_000
+    # The evolve answer is a JSON document of file edits, not a short review finding, and a
+    # reasoning model can spend the whole shared budget before writing it (phase 50). It gets its
+    # own floor; `reasoning_effort: none` is sent only to the OpenCode relay, which accepts it.
+    llm_evolve_max_tokens: int = 8192
+    llm_evolve_reasoning_effort: str = "none"
     # Local CLI-agent sessions (phase 48). One location per tool; unset resolves to the operator's
     # home directory. The caps keep one scan bounded: only the newest files inside the window are
     # opened, no single file is read past its byte cap, and the prompt text has its own budget.

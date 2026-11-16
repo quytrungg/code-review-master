@@ -370,7 +370,11 @@ Backend reads `backend/.env` (see `backend/.env.example`). Every value has a wor
 | `WATCH_TICK_SECRET` | unset | Shared secret for `POST /api/watches/tick`. Unset disables the endpoint (`503`), which is what makes it safe to expose. |
 | `WATCH_MAX_CHECKS_PER_TICK` | `20` | Watches examined per tick, oldest check first. |
 | `WATCH_MAX_REVIEWS_PER_TICK` | `2` | Delta reviews started per tick, so one cron invocation stays inside `maxDuration`. |
-| `LLM_MAX_TOKENS` | `4096` | Claude output cap. |
+| `LLM_MAX_TOKENS` | `4096` | Default output cap for one model call (Claude and OpenAI-compatible transports). |
+| `LLM_REVIEW_MAX_TOKENS` | `8192` | Output cap for every review-ingest call, including each part of a large diff. A reasoning model can otherwise spend the shared cap before writing the findings JSON. |
+| `LLM_REVIEW_REASONING_EFFORT` | `none` | `reasoning_effort` sent to the OpenCode relay for review ingest, so the findings keep the output budget. Empty omits the field; other providers are unaffected. |
+| `LLM_EVOLVE_MAX_TOKENS` | `8192` | Output cap for the skill-evolution analysis, which returns a JSON document of file edits rather than a short finding. |
+| `LLM_EVOLVE_REASONING_EFFORT` | `none` | `reasoning_effort` sent to the OpenCode relay for the evolve call, so a reasoning model does not spend the answer's budget thinking. Empty omits the field; other providers are unaffected. |
 
 ### Credential encryption
 

@@ -586,6 +586,13 @@ async def execute(
 
     semaphore = asyncio.Semaphore(max(1, config.llm_review_concurrency))
     finished: list[int] = []
+    # Verified on the OpenCode relay: "none" keeps the whole output budget for the findings JSON.
+    # Other providers use their defaults; Claude and OpenAI need their own verified knob.
+    reasoning_effort = (
+        config.llm_review_reasoning_effort.strip() or None
+        if model.provider == llm_service.OPENCODE
+        else None
+    )
 
     async def run_part(unit: review_units.ReviewUnit, built: prompts.UserPrompt):
         async with semaphore:
@@ -597,6 +604,8 @@ async def execute(
                 json_mode=True,
                 purpose=LLMPurpose.INGEST,
                 review_id=review.id,
+                max_tokens=config.llm_review_max_tokens,
+                reasoning_effort=reasoning_effort,
             )
         parsed = llm_service.extract_review_result(outcome.text)
         finished.append(unit.index)
