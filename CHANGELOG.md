@@ -9,6 +9,95 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 53 — Claude sign-in as a second way to pay for Claude — 2026-11-17
+
+Plan: `docs/plans/phase_53_plan.md`. Migration `0025`.
+
+### Added
+
+- **Sign in with Claude**, beside the Anthropic API key in Settings. The page opens claude.ai,
+  the operator approves, pastes the code back, and the backend exchanges it with PKCE and stores
+  one OAuth credential per account. Reconnecting updates that row instead of adding a duplicate.
+- **Automatic token refresh.** `llm_keys` gains `auth_type`, `refresh_token` and `expires_at`;
+  `keys_service` renews an access token inside the 120-second window (once, under a per-key lock)
+  before any review, discussion, verdict, summary or probe. A revoked sign-in is a `422` that
+  points at Settings.
+- **A bearer transport for Claude.** OAuth calls carry `Authorization: Bearer …` and
+  `anthropic-beta: oauth-2025-04-20`, and prefix the system prompt with the Claude Code preamble,
+  for both single calls and the streaming discussion. API-key calls are unchanged.
+- **`claude_oauth_states`** stores the PKCE verifier encrypted between start and complete; the
+  state expires after 15 minutes and is deleted when the flow finishes.
+- **Key rotation covers the new secrets.** `CREDENTIAL_COLUMNS` now includes
+  `llm_keys.refresh_token` and `claude_oauth_states.verifier`; `0011` pins the two columns that
+  existed at its revision so an old database can still downgrade through it.
+- `CLAUDE_OAUTH_CLIENT_ID`, `_AUTHORIZE_URL`, `_TOKEN_URL`, `_REDIRECT_URI` and `_SCOPES` default
+  to the public Claude Code client and can be pointed at another registration.
+
+### Changed
+
+- **`LLMKeyRead`** reports `auth_type`, `has_refresh_token` and `expires_at`. The refresh token is
+  never serialised, including with `?reveal=true`; pasting an API key over an OAuth row turns it
+  back into an API-key credential.
+- **`GET /api/models`** refreshes an OAuth key before listing and marks Claude unavailable with the
+  reason when the sign-in has been revoked, instead of dropping the provider silently.
+
+### Notes
+
+- The sign-in reuses Claude Code's public OAuth client because Anthropic has no separate
+  third-party registration; the UI and `DOCS.md` state that Anthropic's terms apply.
+
+### Fixed
+
+- **Test connection returned `HTTP 404` after a successful sign-in.** The probe pinned
+  `claude-sonnet-4-5-20250929`. A subscription can list that model in `/v1/models` and still answer
+  `404 not_found_error: model: …` for Messages (verified live), so a valid token looked broken. The
+  probe now tries the key's default model, then the account's live catalogue (up to six ids), and a
+  404 names the model instead of a bare status.
+- **Review 28 failed every ingest part with `400 invalid_request_error: temperature is deprecated
+  for this model`.** `claude-opus-5-5` (the Claude 5 family) no longer accepts `temperature`, and
+  `/v1/models` exposes no capability flag to detect that. Claude requests now omit the field — the
+  API default applies and the other providers keep their deterministic temperature. A retry-on-400
+  was rejected because the immediate retry can hit a subscription rate limit (`429`).
+- **Deprecated models are no longer offered.** The model picker drops catalogue entries with
+  `lifecycle: deprecated` / `deprecated_at` (keeping them only if nothing else is left), and the
+  static fallback moved to current ids; `claude-sonnet-4-5-20250929` was both deprecated and
+  refused by Messages.
+- **OAuth requests sent the preamble and the app prompt as one string.** Anthropic's OAuth gate
+  rejects that with a misleading `429 rate_limit_error` ("Error"), which would have replaced review
+  28's `400` with a rate-limit message. The preamble is now its own first system block, as Claude
+  Code sends it; the app prompt follows as a second block. Verified live on `claude-opus-5-5` for
+  both a single call and the streaming discussion (`'ok'` each).
+
+---
+
+## Phase 52 — A review keeps running when you leave, and the list tells you when it lands — 2026-11-17
+
+Plan: `docs/plans/phase_52_plan.md`. Migration `0024`.
+
+### Added
+
+- **A finished review is a notification until you open it.** `code_reviews.completed_seen_at` is
+  `NULL` until the operator opens the workspace; `GET /api/reviews` reports `has_unread`, the row
+  shows a dot, and the **Reviews** tab carries the same count badge as **PR Inbox**.
+  `GET /api/reviews/notifications` is the count and `POST /api/reviews/{id}/seen` acknowledges one
+  (idempotent; a `running` review is untouched, so opening it early cannot swallow the
+  notification it produces when it finishes).
+- **The Reviews page updates itself.** While a review is `running` the list polls every 3 s and
+  refreshes when the tab becomes visible again; a banner says the work continues elsewhere. The
+  navbar polls the notification count every 5 s on a visible tab.
+- **Migration 0024** backfills `completed_seen_at = updated_at` on every already-finished review —
+  existing history does not light up the badge — and leaves `running` rows `NULL`.
+
+### Changed
+
+- **Leaving the workspace no longer hides the job.** Ingest was already a background job; the list
+  used to read once, so a review that finished on another page looked stuck at **Running**. The
+  unread dot, badge and running banner make that state visible everywhere.
+- The workspace acknowledges the notification when it loads, so watching a review to completion
+  leaves no unread dot behind.
+
+---
+
 ## Phase 51 — Review ingest keeps its output budget on a reasoning model — 2026-11-16
 
 Plan: `docs/plans/phase_51_plan.md`. No migration; no public API change.

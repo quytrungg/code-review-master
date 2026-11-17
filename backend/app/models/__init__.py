@@ -1,5 +1,9 @@
 from app.models.cached_pr import CachedPR, InboxStatus
+from app.models.claude_oauth_state import ClaudeOAuthState
 from app.models.keys import (
+    AUTH_API_KEY,
+    AUTH_OAUTH,
+    AUTH_TYPES,
     LLM_DEFAULT_BASE_URLS,
     LLM_PROVIDERS,
     VCS_DEFAULT_BASE_URLS,
@@ -28,7 +32,11 @@ from app.models.verdict_pushback import VerdictPushback
 from app.models.watch import ReviewTrigger, ReviewWatch
 
 __all__ = [
+    "AUTH_API_KEY",
+    "AUTH_OAUTH",
+    "AUTH_TYPES",
     "CachedPR",
+    "ClaudeOAuthState",
     "CodeReview",
     "InboxStatus",
     "LLMCall",

@@ -128,6 +128,31 @@ export function DashboardPage() {
     void load();
   }, [load]);
 
+  /** Silent refresh for the polling loop: no spinner, no other cards refetched. */
+  const refreshReviews = useCallback(async () => {
+    const list = await api.listReviews();
+    setReviews(list);
+  }, []);
+
+  const runningCount = reviews.filter((review) => review.status === "running").length;
+
+  useEffect(() => {
+    if (runningCount === 0) return;
+    const timer = window.setInterval(() => {
+      // A failed poll keeps the last good list; the next tick tries again.
+      refreshReviews().catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [runningCount, refreshReviews]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refreshReviews().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshReviews]);
+
   const toggleWatch = async (watch: ReviewWatch, enabled: boolean) => {
     setWatchBusyId(watch.id);
     setError(null);
@@ -210,6 +235,16 @@ export function DashboardPage() {
         </div>
       ) : null}
 
+      {runningCount > 0 ? (
+        <p className="rounded-xl border border-accent/40 bg-accent/10 px-4 py-2.5 text-xs text-accent">
+          {runningCount === 1
+            ? "1 review is running in the background."
+            : `${runningCount} reviews are running in the background.`}{" "}
+          You can leave this page: this list keeps updating, and a review that finishes gets a dot
+          here and a count on the Reviews tab.
+        </p>
+      ) : null}
+
       <WatchesPanel
         watches={watches}
         busyId={watchBusyId}
@@ -266,6 +301,13 @@ export function DashboardPage() {
                       <tr key={review.id} className="transition-colors hover:bg-surfaceMuted/40">
                         <td className="px-4 py-3">
                           <Link to={`/reviews/${review.id}`} className="hover:text-accent">
+                            {review.has_unread ? (
+                              <span
+                                className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-accentStrong align-middle"
+                                title="Finished since you last opened it"
+                                aria-label="Unread"
+                              />
+                            ) : null}
                             <span className="font-medium text-ink">
                               {review.pr_title ?? `PR #${review.pr_number ?? review.id}`}
                             </span>
@@ -289,7 +331,15 @@ export function DashboardPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <Badge tone={statusTone(review.status)}>{statusLabel(review.status)}</Badge>
+                            <Badge tone={statusTone(review.status)}>
+                              {review.status === "running" ? (
+                                <span
+                                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-current"
+                                  aria-hidden="true"
+                                />
+                              ) : null}
+                              {statusLabel(review.status)}
+                            </Badge>
                             {review.trigger ? (
                               <Badge tone="accent">
                                 {review.trigger === "policy"

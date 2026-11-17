@@ -79,7 +79,7 @@ async def draft_lesson(db: Session, review: CodeReview, thread: ReviewThread) ->
     """One model call over the finding: a {title, body} rule the reviewer can edit."""
     try:
         model = llm_service.parse_model_id(review.model_used or "")
-        credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
     except (LLMError, keys_service.KeyError) as exc:
         detail = getattr(exc, "detail", str(exc))
         raise LessonError(

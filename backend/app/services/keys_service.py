@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 
 from app.core.crypto import ensure_encryption_configured
 from app.models.keys import (
+    AUTH_API_KEY,
+    AUTH_OAUTH,
     KEYLESS_LLM_PROVIDERS,
     LLM_PROVIDERS,
     VCS_PROVIDERS,
@@ -25,7 +27,7 @@ from app.schemas.keys import (
     VersionControlKeyCreate,
     VersionControlKeyUpdate,
 )
-from app.services import github_service, gitlab_service, llm_service
+from app.services import claude_oauth_service, github_service, gitlab_service, llm_service
 from app.services.settings_service import get_or_create
 
 
@@ -151,6 +153,12 @@ def update_llm(db: Session, key: LLMKey, payload: LLMKeyUpdate) -> LLMKey:
     if payload.api_key is not None:
         ensure_encryption_configured()
         key.api_key = payload.api_key
+        # Pasting an API key over a Claude sign-in changes what the row is: API-key auth, no
+        # refresh token, no expiry to chase.
+        if key.auth_type != AUTH_API_KEY:
+            key.auth_type = AUTH_API_KEY
+            key.refresh_token = None
+            key.expires_at = None
     if payload.base_url is not None:
         key.base_url = _normalise_base_url(payload.base_url)
     if payload.default_model is not None:
@@ -242,20 +250,54 @@ def credentials_for(key: LLMKey) -> llm_service.LLMCredentials:
         api_key=key.api_key,
         base_url=key.effective_base_url,
         default_model=key.default_model,
+        auth_type=key.auth_type,
     )
 
 
-def credentials_for_provider(
-    db: Session, user_id: int, provider: str
-) -> llm_service.LLMCredentials:
-    """Credentials for a model-id provider (`claude`, `openai`, `opencode`, `ollama-cloud`,
-    `ollama-local`)."""
+def require_llm_key(db: Session, user_id: int, provider: str) -> LLMKey:
+    """Resolve the key for a provider and check it has whatever secret it needs (no network).
+
+    This is the sync half of `credentials_for_provider`, for request validation and policy
+    creation: proving the key exists must not spend a token refresh.
+    """
     db_provider = llm_service.DB_PROVIDER.get(provider, provider)
     key = llm_for(db, user_id, db_provider)
     if key is None:
         raise KeyError(_missing_llm_message(db_provider), 422)
     if db_provider not in KEYLESS_LLM_PROVIDERS and not key.api_key:
+        if key.auth_type == AUTH_OAUTH:
+            raise KeyError(
+                "The Claude sign-in has no access token. Sign in again in Settings.", 422
+            )
         raise KeyError(f"No API key stored for {db_provider}. Add one in Settings.", 422)
+    return key
+
+
+async def access_token_for(key: LLMKey) -> str:
+    """The token to call with now; a Claude sign-in refreshes its access token first."""
+    if key.auth_type != AUTH_OAUTH:
+        return key.api_key or ""
+    try:
+        return await claude_oauth_service.access_token(key)
+    except claude_oauth_service.ClaudeOAuthError as exc:
+        raise KeyError(exc.detail, exc.status_code) from exc
+
+
+async def credentials_for_provider(
+    db: Session, user_id: int, provider: str
+) -> llm_service.LLMCredentials:
+    """Credentials for a model-id provider (`claude`, `openai`, `opencode`, `ollama-cloud`,
+    `ollama-local`), refreshing an expired Claude sign-in first."""
+    key = require_llm_key(db, user_id, provider)
+    if key.auth_type == AUTH_OAUTH:
+        token = await access_token_for(key)
+        return llm_service.LLMCredentials(
+            provider=key.provider,
+            api_key=token,
+            base_url=key.effective_base_url,
+            default_model=key.default_model,
+            auth_type=key.auth_type,
+        )
     return credentials_for(key)
 
 
@@ -287,6 +329,14 @@ async def test_version_control(key: VersionControlKey) -> tuple[bool, str, dict 
 async def test_llm(key: LLMKey) -> tuple[bool, str, dict | None]:
     base_url = key.effective_base_url
     if key.provider == "claude":
+        if key.auth_type == AUTH_OAUTH:
+            try:
+                token = await access_token_for(key)
+            except KeyError as exc:
+                return False, exc.detail, None
+            return await llm_service.probe_claude_oauth(
+                token, base_url=base_url, model=key.default_model
+            )
         return await llm_service.probe_claude(key.api_key or "", base_url=base_url)
     if key.provider == "openai":
         return await llm_service.probe_openai(key.api_key or "", base_url=base_url)

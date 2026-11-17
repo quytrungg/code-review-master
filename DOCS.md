@@ -360,6 +360,11 @@ Backend reads `backend/.env` (see `backend/.env.example`). Every value has a wor
 | `OLLAMA_TIMEOUT_S` | `10` | Ollama probe timeout. |
 | `OLLAMA_CLOUD_URL` | `https://ollama.com` | Hosted Ollama endpoint used when a cloud key has no base URL. |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint for the `openai:` provider. |
+| `CLAUDE_OAUTH_CLIENT_ID` | the public Claude Code client | OAuth client used by **Sign in with Claude**. Override it for your own registration. |
+| `CLAUDE_OAUTH_AUTHORIZE_URL` | `https://claude.ai/oauth/authorize` | Where the sign-in page lives. |
+| `CLAUDE_OAUTH_TOKEN_URL` | `https://console.anthropic.com/v1/oauth/token` | Code exchange and refresh endpoint. |
+| `CLAUDE_OAUTH_REDIRECT_URI` | `https://console.anthropic.com/oauth/code/callback` | The paste-the-code redirect the client is registered with. |
+| `CLAUDE_OAUTH_SCOPES` | `org:create_api_key user:profile user:inference` | Scopes requested at sign-in. |
 | `LLM_TIMEOUT_S` | `180` | One model call (local models can be slow). |
 | `SKILLS_MAX_CHARS` | `80000` | System-prompt budget for the skill library. |
 | `DIFF_MAX_CHARS` | `60000` | Diff budget for a whole review. Past it the change is reviewed in parts instead of being truncated. |
@@ -546,19 +551,23 @@ the one cron-facing endpoint: it authenticates with a shared secret instead of a
 | `PATCH` | `/keys/version-control/{id}` | Replace token, base URL or label. |
 | `DELETE` | `/keys/version-control/{id}` | Delete the key (clears the active pointer). |
 | `POST` | `/keys/version-control/{id}/test` | Probe that token against its host. |
-| `GET` | `/keys/llm` | List model-provider keys (masked, `is_active`). |
-| `POST` | `/keys/llm` | `{provider, api_key?, base_url?, default_model?, label?}` → 201. |
-| `PATCH` | `/keys/llm/{id}` | Replace secret, base URL, default model or label. |
+| `GET` | `/keys/llm` | List model-provider keys (masked, `is_active`); OAuth rows report `auth_type`, `has_refresh_token` and `expires_at`. |
+| `POST` | `/keys/llm` | `{provider, api_key?, base_url?, default_model?, label?}` → 201. OAuth keys are created by the sign-in endpoints, not here. |
+| `PATCH` | `/keys/llm/{id}` | Replace secret, base URL, default model or label. A new `api_key` turns an OAuth row back into an API key. |
 | `DELETE` | `/keys/llm/{id}` | Delete the key. |
-| `POST` | `/keys/llm/{id}/test` | Probe that provider. |
+| `POST` | `/keys/llm/{id}/test` | Probe that provider (an OAuth key makes one tiny Messages call). |
+| `POST` | `/keys/claude/oauth/start` | Start **Sign in with Claude**: `{authorize_url, expires_at}`. |
+| `POST` | `/keys/claude/oauth/complete` | `{code}` → the stored OAuth key; reconnecting updates the same row. |
 | `GET` | `/models` | Model options, `preferred`, and the skill manifest. |
 | `GET` | `/skills` | Foundations discovered on disk, with file counts. |
 | `POST` | `/skills/files` | Upload one `.md`/`.txt` into the default foundation. |
 | `POST` | `/skills/foundings` | Create a foundation from a folder (`files[]`) or a `.zip` (`archive`). |
 | `DELETE` | `/skills/foundations/{id}` | Remove an uploaded foundation (the default is protected). |
-| `GET` | `/reviews` | Review history, newest first. |
+| `GET` | `/reviews` | Review history, newest first; each row reports `has_unread`. |
+| `GET` | `/reviews/notifications` | `{unread_count}` — finished reviews this account has not opened. |
 | `POST` | `/reviews` | Accept a review (`202`) and start the ingest job. |
 | `GET` | `/reviews/{id}` | Review with threads, messages, verdict and confidence. |
+| `POST` | `/reviews/{id}/seen` | Acknowledge a finished review; idempotent, and a `running` row is untouched. |
 | `GET` | `/reviews/{id}/events` | Server-Sent Events stream of ingest progress. |
 | `POST` | `/reviews/{id}/discuss` | Bulk discussion, one model call per thread. |
 | `POST` | `/reviews/{id}/sync` | Fetch the PR's comments and append unseen replies/threads. |
@@ -569,6 +578,30 @@ the one cron-facing endpoint: it authenticates with a shared secret instead of a
 | `PATCH` | `/watches/{id}` | `{enabled}` — pause or resume. |
 | `DELETE` | `/watches/{id}` | Stop watching (`204`). |
 | `POST` | `/watches/tick` | **Public, secret-authenticated** (`Authorization: Bearer` or `X-Watch-Secret`): check every watch once. `503` when `WATCH_TICK_SECRET` is unset, `401` on a wrong secret. |
+
+### Sign in with Claude
+
+`POST /keys/claude/oauth/start` returns the page to open; `POST /keys/claude/oauth/complete` takes
+the code it shows (`code#state` or a bare code) and stores one OAuth key per account. The access
+token, refresh token and expiry live in the same `llm_keys` row as every other credential and are
+encrypted at rest; the refresh token is never returned, even with `?reveal=true`. The backend
+refreshes an expiring token before each call, so a long review session does not need a reconnect.
+A failed refresh is a `422` naming Settings.
+
+The transport differs from an API key: requests carry `Authorization: Bearer …` and
+`anthropic-beta: oauth-2025-04-20`, and the Claude Code preamble is sent as its own first system
+block with the app prompt as a second block (one string containing both is rejected with a
+misleading `429`). Claude requests do not send `temperature`: newer models (the Claude 5 family)
+answer `400 invalid_request_error: temperature is deprecated for this model`, and the catalogue has
+no capability flag to tell which models accept it, so the API default is used; the other providers
+keep their deterministic temperature. The model picker also drops catalogue entries with
+`lifecycle: deprecated`, because Messages may already refuse them. The connection probe sends one
+`max_tokens: 1` Messages call against the key's default model, then against the account's own model
+catalogue — Anthropic can list a model in `/v1/models` and still answer `404 not_found_error` for it
+on a subscription, so a fixed probe model would report a healthy sign-in as broken. The client id,
+endpoints, redirect URI and scopes default to the public Claude Code client and are environment
+settings — Anthropic has no separate OAuth registration for third-party tools, so the sign-in is
+subject to Anthropic's terms for that client.
 
 ### `POST /api/reviews` (202)
 
@@ -585,7 +618,11 @@ cloud — but local models must be addressed as `ollama-local:<tag>`. The prefix
 `model_used`, so a review keeps calling the transport it was created with.
 
 `POST /api/reviews` returns `202` with the new id; the findings arrive through the event stream
-and then `GET /api/reviews/{id}`.
+and then `GET /api/reviews/{id}`. The job keeps running if the operator leaves the workspace, so a
+review that finishes elsewhere is a notification until it is opened: `GET /api/reviews` reports
+`has_unread`, `GET /api/reviews/notifications` returns the Reviews badge count, and
+`POST /api/reviews/{id}/seen` clears it. A `running` review is never counted, and acknowledging one
+early does not suppress the notification it produces when it finishes.
 
 ### `GET /api/reviews/{id}/events`
 

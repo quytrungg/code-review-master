@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     width = max((len(table) for table, _ in CREDENTIAL_COLUMNS), default=5)
     verb = "would re-encrypt" if args.dry_run else "re-encrypted"
     for table, column in CREDENTIAL_COLUMNS:
-        print(f"{table.ljust(width)}  {column:<8}  {verb} {counts.get(table, 0):>4}")
+        print(f"{table.ljust(width)}  {column:<14}  {verb} {counts.get(f'{table}.{column}', 0):>4}")
     print("dry run: nothing written" if args.dry_run else "rotation complete")
     return 0
 

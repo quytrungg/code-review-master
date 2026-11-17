@@ -365,7 +365,7 @@ async def polish(db: Session, user_id: int, text: str) -> str:
             "The active model key has no default model. Pick one in Settings.", 422
         )
     result = await llm_service.generate(
-        keys_service.credentials_for(key),
+        await keys_service.credentials_for_provider(db, user_id, prefix),
         llm_service.parse_model_id(f"{prefix}:{key.default_model}"),
         (
             "You rewrite a code review comment. Return only the rewritten comment: same meaning, "

@@ -82,7 +82,7 @@ async def discuss_threads(
     db: Session, review: CodeReview, entries: list[DiscussThread]
 ) -> tuple[CodeReview, list[DiscussResult], list[str], bool]:
     """Answer each thread, then refresh the review-level verdict. Never raises for model failures."""
-    prepared = prepare_discussion(db, review, entries)
+    prepared = await prepare_discussion(db, review, entries)
 
     # Persist the reviewer's messages first: they are real content even if the model fails.
     threads_by_id = {thread.id: thread for thread in review.threads}
@@ -176,7 +176,7 @@ class PreparedDiscussion:
     entries: list[PreparedEntry]
 
 
-def prepare_discussion(
+async def prepare_discussion(
     db: Session, review: CodeReview, entries: list[DiscussThread]
 ) -> PreparedDiscussion:
     """Validate the batch and build the prompts the JSON and streaming transports share."""
@@ -190,7 +190,7 @@ def prepare_discussion(
     except LLMError as exc:
         raise PipelineError(str(exc), 422) from exc
     try:
-        credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
     except keys_service.KeyError as exc:
         raise PipelineError(exc.detail, exc.status_code) from exc
 

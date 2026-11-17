@@ -4,7 +4,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_db
+from app.core.crypto import CredentialError
+from app.schemas.common import iso_utc
 from app.schemas.keys import (
+    ClaudeOAuthComplete,
+    ClaudeOAuthStart,
     KeyTestResponse,
     LLMKeyCreate,
     LLMKeyRead,
@@ -13,7 +17,7 @@ from app.schemas.keys import (
     VersionControlKeyRead,
     VersionControlKeyUpdate,
 )
-from app.services import keys_service
+from app.services import claude_oauth_service, keys_service
 from app.services.keys_service import KeyError
 from app.services.settings_service import get_or_create
 
@@ -103,6 +107,36 @@ def list_llm(
         LLMKeyRead.from_row(row, active_id, reveal=reveal)
         for row in keys_service.list_llm(db, user.id)
     ]
+
+
+@router.post("/claude/oauth/start", response_model=ClaudeOAuthStart)
+def start_claude_oauth(user: CurrentUser, db: Session = Depends(get_db)) -> ClaudeOAuthStart:
+    """Mint a PKCE state for the Claude sign-in and return the page the operator opens."""
+    try:
+        started = claude_oauth_service.start(db, user.id)
+    except CredentialError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return ClaudeOAuthStart(
+        authorize_url=started.authorize_url, expires_at=iso_utc(started.expires_at)
+    )
+
+
+@router.post("/claude/oauth/complete", response_model=LLMKeyRead)
+async def complete_claude_oauth(
+    payload: ClaudeOAuthComplete, user: CurrentUser, db: Session = Depends(get_db)
+) -> LLMKeyRead:
+    """Exchange the pasted code for tokens and store this account's Claude sign-in.
+
+    Repeating the flow updates the same key, so a reconnect never leaves a stale duplicate.
+    """
+    try:
+        row = await claude_oauth_service.complete(db, user.id, payload.code)
+    except claude_oauth_service.ClaudeOAuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    except CredentialError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    _, active_id = _active_ids(db, user.id)
+    return LLMKeyRead.from_row(row, active_id)
 
 
 @router.post("/llm", response_model=LLMKeyRead, status_code=201)

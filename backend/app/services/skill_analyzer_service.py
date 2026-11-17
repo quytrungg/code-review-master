@@ -701,7 +701,7 @@ async def analyse(
         raise EvolutionError(str(exc), 422) from exc
 
     try:
-        credentials = keys_service.credentials_for_provider(db, user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, user_id, model.provider)
     except keys_service.KeyError as exc:
         raise EvolutionError(exc.detail, exc.status_code) from exc
 

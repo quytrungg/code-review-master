@@ -262,7 +262,7 @@ def create_running_review(
             "Local Ollama models are not available on this deployment; pick a hosted model.", 422
         )
     try:
-        keys_service.credentials_for_provider(db, user_id, model.provider)
+        keys_service.require_llm_key(db, user_id, model.provider)
     except keys_service.KeyError as exc:
         raise PipelineError(exc.detail, exc.status_code) from exc
 
@@ -579,7 +579,7 @@ async def execute(
         progress=55,
     )
     try:
-        credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
     except keys_service.KeyError as exc:
         _fail(db, review, exc.detail)
         return warnings

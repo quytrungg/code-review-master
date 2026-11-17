@@ -31,9 +31,19 @@ export interface LLMKey {
   label: string | null;
   api_key_masked: string | null;
   is_active: boolean;
+  /** `oauth` for a Claude sign-in; its refresh token never leaves the server. */
+  auth_type: "api_key" | "oauth";
+  has_refresh_token: boolean;
+  expires_at: string | null;
   created_at: string | null;
   updated_at: string | null;
   api_key?: string | null;
+}
+
+/** The URL for the Claude sign-in page, and when that attempt stops being valid. */
+export interface ClaudeOAuthStart {
+  authorize_url: string;
+  expires_at: string | null;
 }
 
 export interface ActiveKeySummary {
@@ -375,10 +385,17 @@ export interface CodeReviewSummary {
   parent_review_id: number | null;
   /** `watch` for a review a watch started; `null` when the operator started it. */
   trigger: string | null;
+  /** A finished review nobody has opened yet: the row shows a dot and the navbar counts it. */
+  has_unread: boolean;
   /** Present on detail responses; `null` in the list. */
   usage: ReviewUsage | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** The Reviews badge: finished reviews on this account that have not been opened. */
+export interface ReviewNotifications {
+  unread_count: number;
 }
 
 export interface CachedPR {

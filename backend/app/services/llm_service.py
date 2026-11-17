@@ -10,9 +10,15 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.config import get_settings
+from app.models.keys import AUTH_OAUTH
 from app.services import ledger
 
 ANTHROPIC_VERSION = "2023-06-01"
+# Claude sign-in (OAuth): the Messages API wants a bearer token with this beta header, and an
+# OAuth request whose system prompt does not start with the Claude Code preamble is refused.
+CLAUDE_OAUTH_BETA = "oauth-2025-04-20"
+CLAUDE_CODE_PREAMBLE = "You are Claude Code, Anthropic's official CLI for Claude."
+ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com"
 OLLAMA_NUM_CTX = 32768
 
 CLAUDE = "claude"
@@ -52,9 +58,12 @@ MODEL_ID_HINT = (
     "'ollama-local:<tag>'."
 )
 
+# Shown only when the catalogue cannot be fetched. Both ids were in the live list on 2026-11-17;
+# the old `claude-sonnet-4-5-20250929` entry was removed because Anthropic marks it deprecated
+# (`lifecycle: deprecated`, retires 2026-11-30) and Messages already refuses it on a subscription.
 CLAUDE_FALLBACK = [
-    {"id": "claude-sonnet-4-5-20250929", "label": "Claude Sonnet 4.5"},
-    {"id": "claude-3-5-haiku-20241022", "label": "Claude 3.5 Haiku"},
+    {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5"},
+    {"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5"},
 ]
 
 OPENAI_FALLBACK = [
@@ -73,7 +82,16 @@ FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 class LLMError(Exception):
-    """Model call or response-shape failure, surfaced to the operator verbatim."""
+    """Model call or response-shape failure, surfaced to the operator verbatim.
+
+    `status_code` is kept when the provider answered, so a caller can tell "this model is gone"
+    from "this credential is wrong" without parsing the message.
+    """
+
+    def __init__(self, detail: str, status_code: int | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -94,6 +112,9 @@ class LLMCredentials:
     api_key: str | None
     base_url: str | None
     default_model: str | None = None
+    # `api_key` or `oauth`. Only Claude has both: an OAuth row's `api_key` is an access token and
+    # the request authenticates with `Authorization: Bearer` instead of `x-api-key`.
+    auth_type: str = "api_key"
 
 
 @dataclass
@@ -246,8 +267,12 @@ def resolve_endpoint(credentials: LLMCredentials, model: ModelRef) -> tuple[str,
         }
     if model.provider == CLAUDE:
         if not credentials.api_key:
-            raise LLMError("No Claude API key configured. Add one in Settings.")
-        return (credentials.base_url or "https://api.anthropic.com").rstrip("/"), {}
+            raise LLMError(
+                "The Claude sign-in has no access token. Sign in again in Settings."
+                if credentials.auth_type == AUTH_OAUTH
+                else "No Claude API key configured. Add one in Settings."
+            )
+        return (credentials.base_url or ANTHROPIC_DEFAULT_URL).rstrip("/"), {}
     raise LLMError(f"Provider '{model.provider}' is not supported.")
 
 
@@ -300,6 +325,62 @@ async def probe_claude(
     return False, f"Anthropic returned HTTP {response.status_code}", None
 
 
+async def probe_claude_oauth(
+    access_token: str,
+    base_url: str | None = None,
+    model: str | None = None,
+    timeout: float = 20.0,
+) -> tuple[bool, str, dict | None]:
+    """Verify a Claude sign-in with one tiny Messages call on a model this account accepts.
+
+    A fixed model id is not a credential check: a subscription can reject a model the catalogue
+    still lists (`404 not_found_error`), which looks exactly like a broken sign-in. The catalogue
+    is the account's real list, so try the configured model first, then what it returns.
+    """
+    candidates: list[str] = []
+    if model:
+        candidates.append(model)
+    for entry in await list_claude_models(access_token, base_url, timeout=5.0, oauth=True):
+        candidates.append(entry["id"])
+    for entry in CLAUDE_FALLBACK:
+        candidates.append(entry["id"])
+    # A handful is enough to get past a stale entry; an account always has one working model.
+    unique = list(dict.fromkeys(candidates))[:6]
+
+    last_error: LLMError | None = None
+    for candidate in unique:
+        payload = {
+            "model": candidate,
+            "max_tokens": 1,
+            "system": claude_system_prompt("", oauth=True),
+            "messages": [{"role": "user", "content": "ping"}],
+        }
+        try:
+            await _post_claude_messages(
+                claude_messages_url(base_url),
+                claude_oauth_headers(access_token),
+                payload,
+                timeout,
+            )
+        except LLMError as exc:
+            if exc.status_code in (401, 403):
+                return False, exc.detail, None
+            if exc.status_code == 404:
+                last_error = exc
+                continue
+            return False, exc.detail, None
+        return True, f"Claude sign-in accepted ({candidate})", {"model": candidate}
+
+    if last_error is not None:
+        return (
+            False,
+            "Claude rejected every model this account lists for the sign-in. "
+            "Pick another model in Settings.",
+            None,
+        )
+    return False, "Claude did not accept the sign-in. Sign in again in Settings.", None
+
+
 async def probe_openai(
     api_key: str, base_url: str | None = None, timeout: float = 10.0, label: str = "OpenAI"
 ) -> tuple[bool, str, dict | None]:
@@ -324,22 +405,49 @@ async def probe_openai(
     return True, f"{len([m for m in models if m])} model(s) available", {"models": sorted(m for m in models if m)}
 
 
+def _claude_catalogue(payload: dict) -> list[dict[str, str]]:
+    """Usable `/v1/models` entries, dropping deprecated models while an active one exists.
+
+    Anthropic keeps deprecated models in the catalogue and Messages may already refuse them for an
+    account, which is how a healthy sign-in once looked like a 404. Keep the deprecated ones only
+    when nothing else is left, so the picker never goes empty.
+    """
+    entries = [
+        entry
+        for entry in (payload.get("data") or [])
+        if isinstance(entry, dict) and entry.get("id")
+    ]
+    active = [
+        entry
+        for entry in entries
+        if entry.get("lifecycle") != "deprecated" and not entry.get("deprecated_at")
+    ]
+    return [
+        {"id": entry["id"], "label": entry.get("display_name") or entry["id"]}
+        for entry in (active or entries)
+    ]
+
+
 async def list_claude_models(
-    api_key: str, base_url: str | None = None, timeout: float = 5.0
+    api_key: str, base_url: str | None = None, timeout: float = 5.0, *, oauth: bool = False
 ) -> list[dict[str, str]]:
-    """Installed/available Claude models; falls back to a static list when the API is down."""
-    url = (base_url or "https://api.anthropic.com").rstrip("/") + "/v1/models?limit=20"
+    """Claude models for a key or a sign-in; falls back to a static list when the API refuses.
+
+    The models endpoint is API-key oriented, so an OAuth token may be refused there even though
+    Messages accepts it; the static pair keeps the picker usable and the stored default model is
+    added by the route.
+    """
+    url = (base_url or ANTHROPIC_DEFAULT_URL).rstrip("/") + "/v1/models?limit=20"
+    headers = (
+        claude_oauth_headers(api_key)
+        if oauth
+        else {"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
+    )
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(
-                url, headers={"x-api-key": api_key, "anthropic-version": ANTHROPIC_VERSION}
-            )
+            response = await client.get(url, headers=headers)
         if response.status_code == 200:
-            models = [
-                {"id": entry["id"], "label": entry.get("display_name") or entry["id"]}
-                for entry in response.json().get("data", [])
-                if entry.get("id")
-            ]
+            models = _claude_catalogue(response.json())
             if models:
                 return models
     except (httpx.HTTPError, ValueError, KeyError):
@@ -368,6 +476,98 @@ async def list_openai_models(
     except (httpx.HTTPError, ValueError, KeyError):
         pass
     return list(OPENAI_FALLBACK)
+
+
+def claude_oauth_headers(access_token: str) -> dict[str, str]:
+    """Bearer auth for a Claude sign-in, as Claude Code sends it."""
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "anthropic-version": ANTHROPIC_VERSION,
+        "anthropic-beta": CLAUDE_OAUTH_BETA,
+        "content-type": "application/json",
+    }
+
+
+def claude_system_prompt(system_prompt: str, *, oauth: bool) -> str | list[dict[str, str]]:
+    """The system field for a Claude request.
+
+    An OAuth request must carry the Claude Code preamble as its own first system block. Appending
+    the app prompt to the preamble as one string makes Anthropic answer a misleading
+    `429 rate_limit_error`; an array of text blocks is what Claude Code sends and is accepted for
+    short and long prompts alike. API keys keep the plain string.
+    """
+    if not oauth:
+        return system_prompt
+    blocks = [{"type": "text", "text": CLAUDE_CODE_PREAMBLE}]
+    if system_prompt:
+        blocks.append({"type": "text", "text": system_prompt})
+    return blocks
+
+
+def claude_messages_url(base_url: str | None) -> str:
+    return (base_url or ANTHROPIC_DEFAULT_URL).rstrip("/") + "/v1/messages"
+
+
+def claude_message_payload(
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    *,
+    oauth: bool,
+) -> dict:
+    # No `temperature`: Anthropic deprecates it on newer models with a `400 invalid_request_error`
+    # ("`temperature` is deprecated for this model"), and the catalogue has no capability flag to
+    # tell which ones accept it. Omitting it works for every Claude generation and is the API
+    # default; the other providers keep their deterministic temperature.
+    return {
+        "model": name,
+        "max_tokens": max_tokens,
+        "system": claude_system_prompt(system_prompt, oauth=oauth),
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+
+
+async def _post_claude_messages(
+    url: str, headers: dict[str, str], payload: dict, timeout: float | None = None
+) -> dict:
+    """One Messages request; the seam tests capture, and the only place raw Claude errors map."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout or get_settings().llm_timeout_s) as client:
+            response = await client.post(url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        raise LLMError(f"Could not reach Claude: {exc.__class__.__name__}") from exc
+
+    if response.status_code in (401, 403):
+        detail = (response.text or "").strip()[:200]
+        raise LLMError(
+            "Claude rejected the sign-in. Sign in again in Settings."
+            + (f" ({detail})" if detail else ""),
+            response.status_code,
+        )
+    if response.status_code == 404:
+        model = payload.get("model") if isinstance(payload, dict) else None
+        raise LLMError(
+            f"Claude does not have the model '{model}' for this account. Pick another model.",
+            404,
+        )
+    if response.status_code == 429:
+        raise LLMError(
+            "Claude rate limit reached. Wait a moment and try again.", response.status_code
+        )
+    if response.status_code != 200:
+        raise LLMError(
+            f"Claude returned HTTP {response.status_code}: {response.text[:300]}",
+            response.status_code,
+        )
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise LLMError("Claude returned an unexpected response shape") from exc
+    if not isinstance(body, dict):
+        raise LLMError("Claude returned an unexpected response shape")
+    return body
 
 
 async def generate(
@@ -405,16 +605,25 @@ async def generate(
     headers: dict[str, str] = {}
     if model.provider == CLAUDE:
         if not credentials.api_key:
-            raise LLMError("No Claude API key configured. Add one in Settings.")
+            raise LLMError(
+                "The Claude sign-in has no access token. Sign in again in Settings."
+                if credentials.auth_type == AUTH_OAUTH
+                else "No Claude API key configured. Add one in Settings."
+            )
     else:
         base_url, headers = resolve_endpoint(credentials, model)
 
     started = time.monotonic()
     try:
         if model.provider == CLAUDE:
-            result = await _generate_claude(
-                credentials, model.name, system_prompt, user_prompt, output_limit
-            )
+            if credentials.auth_type == AUTH_OAUTH:
+                result = await _generate_claude_oauth(
+                    credentials, model.name, system_prompt, user_prompt, output_limit
+                )
+            else:
+                result = await _generate_claude(
+                    credentials, model.name, system_prompt, user_prompt, output_limit
+                )
         else:
             if model.provider in (OPENAI, OPENCODE):
                 result = await _generate_openai(
@@ -481,10 +690,10 @@ async def _generate_claude(
     )
     started = time.monotonic()
     try:
+        # No `temperature`: newer Claude models reject it (see `claude_message_payload`).
         message = await client.messages.create(
             model=name,
             max_tokens=max_tokens,
-            temperature=0,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         )
@@ -506,6 +715,47 @@ async def _generate_claude(
         }
     )
     text = "".join(block.text for block in message.content if getattr(block, "type", "") == "text")
+    return LLMResult(
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=_elapsed_ms(started),
+        provider=CLAUDE,
+        model=name,
+    )
+
+
+async def _generate_claude_oauth(
+    credentials: LLMCredentials,
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+) -> LLMResult:
+    """One Messages call with a Claude sign-in's bearer token (httpx, not the SDK).
+
+    The SDK's API-key auth always wins when an `ANTHROPIC_API_KEY` happens to exist in the process
+    environment, which would send the OAuth access token as `x-api-key`; this transport owns its
+    headers instead, and pins the beta header and preamble the OAuth endpoint requires.
+    """
+    if not credentials.api_key:
+        raise LLMError("The Claude sign-in has no access token. Sign in again in Settings.")
+
+    started = time.monotonic()
+    body = await _post_claude_messages(
+        claude_messages_url(credentials.base_url),
+        claude_oauth_headers(credentials.api_key),
+        claude_message_payload(name, system_prompt, user_prompt, max_tokens, oauth=True),
+    )
+    if body.get("stop_reason") == "max_tokens":
+        raise _truncation_error("Claude", name, max_tokens)
+
+    text = "".join(
+        block.get("text", "")
+        for block in body.get("content") or []
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    prompt_tokens, completion_tokens = claude_usage(body)
     return LLMResult(
         text=text,
         prompt_tokens=prompt_tokens,
@@ -672,17 +922,27 @@ async def stream(
     headers: dict[str, str] = {}
     if model.provider == CLAUDE:
         if not credentials.api_key:
-            raise LLMError("No Claude API key configured. Add one in Settings.")
+            raise LLMError(
+                "The Claude sign-in has no access token. Sign in again in Settings."
+                if credentials.auth_type == AUTH_OAUTH
+                else "No Claude API key configured. Add one in Settings."
+            )
     else:
         base_url, headers = resolve_endpoint(credentials, model)
 
     started = time.monotonic()
     try:
         if model.provider == CLAUDE:
-            result = await _stream_claude(
-                credentials, model.name, system_prompt, user_prompt, output_limit,
-                on_delta,
-            )
+            if credentials.auth_type == AUTH_OAUTH:
+                result = await _stream_claude_oauth(
+                    credentials, model.name, system_prompt, user_prompt, output_limit,
+                    on_delta,
+                )
+            else:
+                result = await _stream_claude(
+                    credentials, model.name, system_prompt, user_prompt, output_limit,
+                    on_delta,
+                )
         elif model.provider in (OPENAI, OPENCODE):
             result = await _stream_openai(
                 base_url,
@@ -908,10 +1168,10 @@ async def _stream_claude(
     started = time.monotonic()
     parts: list[str] = []
     try:
+        # No `temperature`: newer Claude models reject it (see `claude_message_payload`).
         async with client.messages.stream(
             model=name,
             max_tokens=max_tokens,
-            temperature=0,
             system=system_prompt,
             messages=[{"role": "user", "content": user_prompt}],
         ) as stream:
@@ -937,6 +1197,95 @@ async def _stream_claude(
             }
         }
     )
+    return LLMResult(
+        text="".join(parts),
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        latency_ms=_elapsed_ms(started),
+        provider=CLAUDE,
+        model=name,
+    )
+
+
+async def _stream_claude_oauth(
+    credentials: LLMCredentials,
+    name: str,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    on_delta: Callable[[str], None],
+) -> LLMResult:
+    """Anthropic SSE over a bearer token: `content_block_delta` text, usage on start/delta."""
+    if not credentials.api_key:
+        raise LLMError("The Claude sign-in has no access token. Sign in again in Settings.")
+
+    payload = claude_message_payload(name, system_prompt, user_prompt, max_tokens, oauth=True)
+    payload["stream"] = True
+    url = claude_messages_url(credentials.base_url)
+    headers = claude_oauth_headers(credentials.api_key)
+
+    started = time.monotonic()
+    parts: list[str] = []
+    events: list[dict] = []
+    stop_reason: str | None = None
+    try:
+        async with httpx.AsyncClient(timeout=get_settings().llm_timeout_s) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code in (401, 403):
+                    await response.aread()
+                    detail = (response.text or "").strip()[:200]
+                    raise LLMError(
+                        "Claude rejected the sign-in. Sign in again in Settings."
+                        + (f" ({detail})" if detail else ""),
+                        response.status_code,
+                    )
+                if response.status_code == 429:
+                    raise LLMError("Claude rate limit reached. Wait a moment and try again.", 429)
+                if response.status_code == 404:
+                    await response.aread()
+                    raise LLMError(
+                        f"Claude does not have the model '{name}' for this account. "
+                        "Pick another model.",
+                        404,
+                    )
+                if response.status_code != 200:
+                    await response.aread()
+                    raise LLMError(
+                        f"Claude returned HTTP {response.status_code}: {response.text[:300]}",
+                        response.status_code,
+                    )
+                async for line in response.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:") :].strip()
+                    if not data or data == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data)
+                    except ValueError as exc:
+                        raise LLMError("Claude returned an unexpected response shape") from exc
+                    if not isinstance(event, dict):
+                        continue
+                    events.append(event)
+                    if event.get("type") == "error":
+                        message = (event.get("error") or {}).get("message") or "stream error"
+                        raise LLMError(f"Claude stream error: {message}")
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta") or {}
+                        if delta.get("type") == "text_delta":
+                            chunk = delta.get("text") or ""
+                            if chunk:
+                                parts.append(chunk)
+                                on_delta(chunk)
+                    elif event.get("type") == "message_delta":
+                        stop_reason = (event.get("delta") or {}).get("stop_reason") or stop_reason
+    except httpx.HTTPError as exc:
+        raise LLMError(f"Could not reach Claude: {exc.__class__.__name__}") from exc
+
+    if stop_reason == "max_tokens":
+        raise _truncation_error("Claude", name, max_tokens)
+
+    prompt_tokens, completion_tokens = claude_usage(events)
     return LLMResult(
         text="".join(parts),
         prompt_tokens=prompt_tokens,

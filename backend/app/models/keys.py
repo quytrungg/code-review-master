@@ -27,6 +27,12 @@ LLM_OLLAMA_LOCAL = "ollama_local"
 LLM_OPENCODE = "opencode"
 LLM_PROVIDERS = (LLM_CLAUDE, LLM_OPENAI, LLM_OLLAMA_CLOUD, LLM_OLLAMA_LOCAL, LLM_OPENCODE)
 
+# How an `llm_keys` row authenticates (`auth_type`). Claude is the only provider with both today:
+# an API key uses `x-api-key`, a Claude sign-in uses an OAuth bearer token plus a refresh token.
+AUTH_API_KEY = "api_key"
+AUTH_OAUTH = "oauth"
+AUTH_TYPES = (AUTH_API_KEY, AUTH_OAUTH)
+
 # Providers that need no secret (a local daemon is protected by the network, not a key).
 KEYLESS_LLM_PROVIDERS = (LLM_OLLAMA_LOCAL,)
 
@@ -83,6 +89,14 @@ class LLMKey(Base):
     )
     provider: Mapped[str] = mapped_column(String(16), nullable=False)
     api_key: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
+    # `api_key` or `oauth`. An OAuth row stores the access token in `api_key` and keeps the
+    # refresh token and expiry beside it; everything else stays an API key.
+    auth_type: Mapped[str] = mapped_column(
+        String(16), nullable=False, default=AUTH_API_KEY, server_default=AUTH_API_KEY
+    )
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
+    # When the OAuth access token stops working. Refreshed 120 s early by `keys_service`.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Model suggested by default for this provider (used to prime the review picker).
     default_model: Mapped[str | None] = mapped_column(Text, nullable=True)

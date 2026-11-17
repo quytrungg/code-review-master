@@ -6,32 +6,59 @@ import { getTheme, toggleTheme, type Theme } from "@/lib/theme";
 import { api } from "@/services/api";
 import { cn } from "@/lib/utils";
 
-const links = [
-  { to: "/", label: "Reviews", icon: GitPullRequest, end: true, badge: false },
-  { to: "/inbox", label: "PR Inbox", icon: Inbox, end: true, badge: true },
-  { to: "/skills", label: "Skills", icon: BookOpen, end: false, badge: false },
-  { to: "/analytics", label: "Analytics", icon: BarChart3, end: false, badge: false },
-  { to: "/settings", label: "Settings", icon: Settings2, end: false, badge: false },
+const links: {
+  to: string;
+  label: string;
+  icon: typeof GitPullRequest;
+  end: boolean;
+  badge?: "inbox" | "reviews";
+}[] = [
+  { to: "/", label: "Reviews", icon: GitPullRequest, end: true, badge: "reviews" },
+  { to: "/inbox", label: "PR Inbox", icon: Inbox, end: true, badge: "inbox" },
+  { to: "/skills", label: "Skills", icon: BookOpen, end: false },
+  { to: "/analytics", label: "Analytics", icon: BarChart3, end: false },
+  { to: "/settings", label: "Settings", icon: Settings2, end: false },
 ];
 
 export function Navbar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [unread, setUnread] = useState(0);
+  const [badges, setBadges] = useState({ inbox: 0, reviews: 0 });
   const [theme, setThemeState] = useState<Theme>(getTheme);
 
   useEffect(() => {
-    // A failure here must never break the chrome: the badge is best-effort.
+    // A failure here must never break the chrome: the badges are best-effort.
     let cancelled = false;
-    api
-      .listInbox({ unread: true })
-      .then((rows) => {
-        if (!cancelled) setUnread(rows.length);
-      })
-      .catch(() => {});
+    const loadInbox = () =>
+      api
+        .listInbox({ unread: true })
+        .then((rows) => {
+          if (!cancelled) setBadges((current) => ({ ...current, inbox: rows.length }));
+        })
+        .catch(() => {});
+    const loadReviews = () =>
+      api
+        .reviewNotifications()
+        .then((result) => {
+          if (!cancelled) setBadges((current) => ({ ...current, reviews: result.unread_count }));
+        })
+        .catch(() => {});
+
+    void loadInbox();
+    void loadReviews();
+    // A review can finish while the operator is reading another page, so the count is polled.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadReviews();
+    }, 5000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void loadReviews();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [location.pathname]);
 
@@ -69,9 +96,12 @@ export function Navbar() {
             >
               <Icon className="h-4 w-4" />
               {label}
-              {badge && unread > 0 ? (
-                <span className="grid h-4 min-w-4 place-items-center rounded-full bg-accentStrong px-1 text-[10px] font-semibold text-white">
-                  {unread}
+              {badge && badges[badge] > 0 ? (
+                <span
+                  className="grid h-4 min-w-4 place-items-center rounded-full bg-accentStrong px-1 text-[10px] font-semibold text-white"
+                  title={`${badges[badge]} unread`}
+                >
+                  {badges[badge]}
                 </span>
               ) : null}
             </NavLink>

@@ -153,7 +153,7 @@ def test_legacy_plaintext_row_is_readable_then_encrypted(client):
     with SessionLocal() as db:
         counts = encrypt_plaintext(db.connection())
         db.commit()
-    assert counts["llm_keys"] >= 1
+    assert counts["llm_keys.api_key"] >= 1
     assert _raw("llm_keys", "api_key", legacy_id).startswith("enc:v1:")
     with SessionLocal() as db:
         assert plaintext_count(db.connection()) == 0
@@ -211,7 +211,8 @@ def test_rotation_rewrites_every_row(client, monkeypatch):
     with SessionLocal() as db:
         counts = reencrypt_all(db.connection())
         db.commit()
-    assert counts["version_control_keys"] >= 1 and counts["llm_keys"] >= 1
+    assert counts["version_control_keys.token"] >= 1
+    assert counts["llm_keys.api_key"] >= 1
 
     # Dropping the old key after rotation leaves every row readable.
     monkeypatch.setenv("CREDENTIALS_ENCRYPTION_KEY", OTHER_KEY)

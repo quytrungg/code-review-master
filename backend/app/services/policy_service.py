@@ -83,7 +83,7 @@ def _validate(db: Session, user_id: int, model_id: str, foundation_id: str | Non
             "Local Ollama models are not available on this deployment; pick a hosted model.", 422
         )
     try:
-        keys_service.credentials_for_provider(db, user_id, model.provider)
+        keys_service.require_llm_key(db, user_id, model.provider)
     except keys_service.KeyError as exc:
         raise PolicyError(exc.detail, exc.status_code) from exc
     try:

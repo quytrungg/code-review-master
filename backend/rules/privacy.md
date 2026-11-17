@@ -27,7 +27,7 @@ user, not a default.
 |---|---|---|
 | Password | `users.password_hash` | PBKDF2-SHA256, 260k iterations, 16-byte per-user salt, constant-time compare |
 | Session token | `sessions.token_hash` | SHA-256 of the cookie value; the raw token exists only in the HttpOnly cookie |
-| API tokens / keys | `version_control_keys.token`, `llm_keys.api_key` | **encrypted** — Fernet (`enc:v1:`), key in `CREDENTIALS_ENCRYPTION_KEY`; decrypted only in memory for an outbound call or a `reveal=true` read, masked in every API read, `[REDACTED]` in logs |
+| API tokens / keys | `version_control_keys.token`, `llm_keys.api_key`, `llm_keys.refresh_token`, `claude_oauth_states.verifier` | **encrypted** — Fernet (`enc:v1:`), key in `CREDENTIALS_ENCRYPTION_KEY`; decrypted only in memory for an outbound call or a `reveal=true` read, masked in every API read, `[REDACTED]` in logs. The refresh token and PKCE verifier have no read path at all |
 | Email | `users.email` | Plaintext by decision: the account identifier, case-insensitive equality lookup, displayed in the nav. Not classified as PII |
 | `label` fields, review titles, thread text | several | Free text; never put personal data there, and keep prompts free of customer identifiers |
 
@@ -48,7 +48,7 @@ text, so backups stay operator-only files and are never attached to a review or 
 - `CREDENTIALS_ENCRYPTION_KEY` lives in the environment only — never in the database, a migration, a
   commit or a log line. A deployment sets it in its project environment and exports it for the
   release migration; losing it means re-entering every credential.
-- A new secret column is mapped as `EncryptedText`. A data pass over stored secrets is a data-only
+- A new secret column is mapped as `EncryptedText` **and** added to `app.db.encryption.CREDENTIAL_COLUMNS`, or key rotation and the plaintext scan skip it. Historical migrations pin the columns that existed at their revision instead of using that list. A data pass over stored secrets is a data-only
   Alembic revision plus a helper in `db/encryption.py`, never an ad-hoc `UPDATE` in a route.
 
 ## Applying it to new work

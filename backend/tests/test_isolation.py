@@ -68,6 +68,9 @@ def test_reviews_are_only_visible_to_their_owner(client, second_client, monkeypa
 
     assert [row["id"] for row in client.get("/api/reviews").json()] == [review_id]
     assert second_client.get("/api/reviews").json() == []
+    assert client.get("/api/reviews/notifications").json() == {"unread_count": 1}
+    assert second_client.get("/api/reviews/notifications").json() == {"unread_count": 0}
+    assert second_client.post(f"/api/reviews/{review_id}/seen").status_code == 404
 
     assert second_client.get(f"/api/reviews/{review_id}").status_code == 404
     assert second_client.get(f"/api/reviews/{review_id}/events").status_code == 404

@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     ollama_cloud_url: str = "https://ollama.com"
     # OpenAI-compatible endpoint for the `openai:` provider (Codex/GPT models).
     openai_base_url: str = "https://api.openai.com/v1"
+    # Claude sign-in (OAuth). The defaults are the public Claude Code client; a deployment with its
+    # own registration overrides any of them without a code change. No secret lives here.
+    claude_oauth_client_id: str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    claude_oauth_authorize_url: str = "https://claude.ai/oauth/authorize"
+    claude_oauth_token_url: str = "https://console.anthropic.com/v1/oauth/token"
+    claude_oauth_redirect_uri: str = "https://console.anthropic.com/oauth/code/callback"
+    claude_oauth_scopes: str = "org:create_api_key user:profile user:inference"
     # Budgets. The skill library is far larger than a prompt, so it is sampled by relevance.
     skills_max_chars: int = 80_000
     diff_max_chars: int = 60_000

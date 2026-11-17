@@ -124,7 +124,7 @@ async def summarise_threads(
 
     try:
         model = llm_service.parse_model_id(review.model_used or "")
-        credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
     except (LLMError, keys_service.KeyError) as exc:
         logger.info("Summariser skipped: %s", exc)
         return None
@@ -232,7 +232,7 @@ async def summarise_round(
     """
     try:
         model = llm_service.parse_model_id(review.model_used or "")
-        credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+        credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
     except (LLMError, keys_service.KeyError) as exc:
         logger.info("Round summary skipped: %s", exc)
         return None, [f"Could not summarise this round ({exc}); the copilot's text was kept."]

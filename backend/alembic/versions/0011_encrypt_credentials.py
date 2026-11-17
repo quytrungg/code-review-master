@@ -29,14 +29,18 @@ down_revision: str | None = "0009"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# The columns that existed at this revision. Pinned on purpose: `app.db.encryption` also knows
+# columns added later (Claude sign-in), and those tables do not exist yet here.
+_COLUMNS_AT_0011 = (("version_control_keys", "token"), ("llm_keys", "api_key"))
+
 
 def upgrade() -> None:
     from app.db.encryption import encrypt_plaintext  # noqa: PLC0415 - imported after path setup
 
-    encrypt_plaintext(op.get_bind())
+    encrypt_plaintext(op.get_bind(), columns=_COLUMNS_AT_0011)
 
 
 def downgrade() -> None:
     from app.db.encryption import decrypt_all  # noqa: PLC0415 - imported after path setup
 
-    decrypt_all(op.get_bind())
+    decrypt_all(op.get_bind(), columns=_COLUMNS_AT_0011)

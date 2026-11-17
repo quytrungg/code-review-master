@@ -53,6 +53,13 @@ export function SetupPage() {
     if (next) apply(next);
   }
 
+  async function signedInLLM(key: LLMKey) {
+    const next =
+      settings?.llm_key_id == null ? await api.updateSettings({ llm_key_id: key.id }) : null;
+    await loadKeys();
+    if (next) apply(next);
+  }
+
   const hasVersionControl = settings?.version_control_key_id != null;
   const hasModel = settings?.llm_key_id != null;
   const ready = hasVersionControl && hasModel;
@@ -63,8 +70,8 @@ export function SetupPage() {
         <p className="label-text">First run</p>
         <h1 className="text-2xl font-semibold tracking-tight">Connect a provider to get started</h1>
         <p className="text-sm text-inkMuted">
-          Two credentials are needed: a token for the host your pull requests live on, and an API key
-          for the model that reviews them. Both stay in your local database.
+          Two credentials are needed: a token for the host your pull requests live on, and a model
+          credential — an API key or a Claude sign-in. Both stay in your local database.
         </p>
       </header>
 
@@ -127,6 +134,7 @@ export function SetupPage() {
               await loadKeys();
             }}
             onCreate={createLLM}
+            onSignedIn={signedInLLM}
             onDelete={async (id) => {
               await api.deleteLLMKey(id);
               await Promise.all([loadKeys(), refresh()]);

@@ -1,10 +1,29 @@
 import { useState } from "react";
-import { AlertTriangle, Check, CheckCircle2, KeyRound, Loader2, Plus, Trash2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  ExternalLink,
+  KeyRound,
+  Loader2,
+  LogIn,
+  Plus,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select } from "@/components/ui/Input";
 import { cn } from "@/lib/utils";
-import type { KeyTestResult, LLMKey, LLMKeyCreate, VersionControlKey, VersionControlKeyCreate } from "@/types";
+import { api } from "@/services/api";
+import type {
+  ClaudeOAuthStart,
+  KeyTestResult,
+  LLMKey,
+  LLMKeyCreate,
+  VersionControlKey,
+  VersionControlKeyCreate,
+} from "@/types";
 
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
@@ -59,6 +78,7 @@ interface RowProps {
   secret: string | null;
   detail: string | null;
   active: boolean;
+  signedIn?: boolean;
   result?: KeyTestResult;
   testing: boolean;
   onActivate: () => void;
@@ -66,7 +86,18 @@ interface RowProps {
   onDelete: () => void;
 }
 
-function KeyRow({ provider, secret, detail, active, result, testing, onActivate, onTest, onDelete }: RowProps) {
+function KeyRow({
+  provider,
+  secret,
+  detail,
+  active,
+  signedIn,
+  result,
+  testing,
+  onActivate,
+  onTest,
+  onDelete,
+}: RowProps) {
   return (
     <div
       className={cn(
@@ -76,6 +107,7 @@ function KeyRow({ provider, secret, detail, active, result, testing, onActivate,
     >
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone={active ? "accent" : "neutral"}>{PROVIDER_LABEL[provider] ?? provider}</Badge>
+        {signedIn ? <Badge tone="success">signed in</Badge> : null}
         <span className="font-mono text-xs text-inkMuted">{secret ?? "no secret stored"}</span>
         {detail ? <span className="text-[11px] text-inkMuted">{detail}</span> : null}
         {active ? (
@@ -234,12 +266,22 @@ export interface LLMKeysProps {
   activeId: number | null;
   onActivate: (id: number) => Promise<void>;
   onCreate: (payload: LLMKeyCreate) => Promise<void>;
+  onSignedIn: (key: LLMKey) => Promise<void>;
   onDelete: (id: number) => Promise<void>;
   onTest: (id: number) => Promise<KeyTestResult>;
 }
 
-export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest }: LLMKeysProps) {
+export function LLMKeys({
+  keys,
+  activeId,
+  onActivate,
+  onCreate,
+  onSignedIn,
+  onDelete,
+  onTest,
+}: LLMKeysProps) {
   const [provider, setProvider] = useState("claude");
+  const [claudeMode, setClaudeMode] = useState<"api_key" | "oauth">("api_key");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [defaultModel, setDefaultModel] = useState("");
@@ -248,9 +290,29 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<number, KeyTestResult>>({});
   const [testing, setTesting] = useState<number | null>(null);
+  const [oauthStart, setOauthStart] = useState<ClaudeOAuthStart | null>(null);
+  const [oauthCode, setOauthCode] = useState("");
+  const [oauthBusy, setOauthBusy] = useState(false);
+  const [oauthError, setOauthError] = useState<string | null>(null);
 
   const option = LLM_OPTIONS.find((item) => item.value === provider) ?? LLM_OPTIONS[0];
+  const signingIn = provider === "claude" && claudeMode === "oauth";
   const ready = option.needsSecret ? apiKey.trim().length > 0 : true;
+
+  function changeProvider(next: string) {
+    setProvider(next);
+    setClaudeMode("api_key");
+    setOauthStart(null);
+    setOauthCode("");
+    setOauthError(null);
+  }
+
+  function changeClaudeMode(next: "api_key" | "oauth") {
+    setClaudeMode(next);
+    setOauthStart(null);
+    setOauthCode("");
+    setOauthError(null);
+  }
 
   async function submit() {
     setBusy(true);
@@ -270,6 +332,34 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
       setError(err instanceof Error ? err.message : "Could not save the key");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function beginSignIn() {
+    setOauthBusy(true);
+    setOauthError(null);
+    try {
+      setOauthStart(await api.startClaudeOAuth());
+      setOauthCode("");
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : "Could not start the Claude sign-in");
+    } finally {
+      setOauthBusy(false);
+    }
+  }
+
+  async function finishSignIn() {
+    setOauthBusy(true);
+    setOauthError(null);
+    try {
+      const key = await api.completeClaudeOAuth(oauthCode.trim());
+      setOauthStart(null);
+      setOauthCode("");
+      await onSignedIn(key);
+    } catch (err) {
+      setOauthError(err instanceof Error ? err.message : "Could not finish the Claude sign-in");
+    } finally {
+      setOauthBusy(false);
     }
   }
 
@@ -304,6 +394,7 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
             [key.default_model, key.label, key.base_url].filter(Boolean).join(" · ") || null
           }
           active={key.id === activeId}
+          signedIn={key.auth_type === "oauth"}
           result={results[key.id]}
           testing={testing === key.id}
           onActivate={() => void onActivate(key.id)}
@@ -312,11 +403,30 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
         />
       ))}
 
-      <div className="rounded-lg border border-dashed border-border p-3">
+      <div className="space-y-3 rounded-lg border border-dashed border-border p-3">
+        {provider === "claude" ? (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              variant={claudeMode === "api_key" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => changeClaudeMode("api_key")}
+            >
+              <KeyRound className="h-3.5 w-3.5" /> API key
+            </Button>
+            <Button
+              variant={claudeMode === "oauth" ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => changeClaudeMode("oauth")}
+            >
+              <LogIn className="h-3.5 w-3.5" /> Claude sign-in
+            </Button>
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap items-end gap-2">
           <div className="w-40 space-y-1">
             <Label>Provider</Label>
-            <Select value={provider} onChange={(event) => setProvider(event.target.value)}>
+            <Select value={provider} onChange={(event) => changeProvider(event.target.value)}>
               {LLM_OPTIONS.map((item) => (
                 <option key={item.value} value={item.value}>
                   {item.label}
@@ -324,7 +434,7 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
               ))}
             </Select>
           </div>
-          {option.needsSecret ? (
+          {option.needsSecret && !signingIn ? (
             <div className="min-w-[200px] flex-1 space-y-1">
               <Label>API key</Label>
               <Input
@@ -335,36 +445,94 @@ export function LLMKeys({ keys, activeId, onActivate, onCreate, onDelete, onTest
               />
             </div>
           ) : null}
-          <div className="min-w-[190px] flex-1 space-y-1">
-            <Label>{provider === "ollama_local" ? "Base URL" : "Base URL (optional)"}</Label>
-            <Input
-              value={baseUrl}
-              onChange={(event) => setBaseUrl(event.target.value)}
-              placeholder={
-                provider === "ollama_local"
-                  ? "http://localhost:11434"
-                  : provider === "openai"
-                    ? "https://api.openai.com/v1"
-                    : provider === "opencode"
-                      ? "https://opencode.ai/inference/openai/v1"
-                      : provider === "ollama_cloud"
-                        ? "https://ollama.com"
-                        : "https://api.anthropic.com"
-              }
-            />
-          </div>
-          <div className="w-44 space-y-1">
-            <Label>Default model</Label>
-            <Input
-              value={defaultModel}
-              onChange={(event) => setDefaultModel(event.target.value)}
-              placeholder={provider === "ollama_local" ? "llama3:8b" : "optional"}
-            />
-          </div>
-          <Button onClick={() => void submit()} disabled={busy || !ready}>
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add key
-          </Button>
+          {signingIn ? null : (
+            <>
+              <div className="min-w-[190px] flex-1 space-y-1">
+                <Label>{provider === "ollama_local" ? "Base URL" : "Base URL (optional)"}</Label>
+                <Input
+                  value={baseUrl}
+                  onChange={(event) => setBaseUrl(event.target.value)}
+                  placeholder={
+                    provider === "ollama_local"
+                      ? "http://localhost:11434"
+                      : provider === "openai"
+                        ? "https://api.openai.com/v1"
+                        : provider === "opencode"
+                          ? "https://opencode.ai/inference/openai/v1"
+                          : provider === "ollama_cloud"
+                            ? "https://ollama.com"
+                            : "https://api.anthropic.com"
+                  }
+                />
+              </div>
+              <div className="w-44 space-y-1">
+                <Label>Default model</Label>
+                <Input
+                  value={defaultModel}
+                  onChange={(event) => setDefaultModel(event.target.value)}
+                  placeholder={provider === "ollama_local" ? "llama3:8b" : "optional"}
+                />
+              </div>
+              <Button onClick={() => void submit()} disabled={busy || !ready}>
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} Add key
+              </Button>
+            </>
+          )}
         </div>
+
+        {signingIn ? (
+          <div className="space-y-2 rounded-lg border border-border bg-surfaceMuted/30 p-3">
+            <p className="text-xs text-inkMuted">
+              Signs in with your Claude account. It uses the Claude Code OAuth client, so Anthropic&apos;s
+              terms apply; both tokens stay encrypted in your local database.
+            </p>
+            {oauthStart ? (
+              <>
+                <a
+                  href={oauthStart.authorize_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 text-xs text-accent transition-colors hover:text-accentStrong"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> Open the Claude sign-in page
+                </a>
+                <p className="text-xs text-inkMuted">
+                  Approve access, then paste the code Claude shows — usually{" "}
+                  <span className="font-mono">code#state</span>.
+                </p>
+                <div className="flex flex-wrap items-end gap-2">
+                  <div className="min-w-[240px] flex-1 space-y-1">
+                    <Label htmlFor="claude-oauth-code">Code</Label>
+                    <Input
+                      id="claude-oauth-code"
+                      value={oauthCode}
+                      onChange={(event) => setOauthCode(event.target.value)}
+                      placeholder="Paste the code Claude shows"
+                    />
+                  </div>
+                  <Button
+                    onClick={() => void finishSignIn()}
+                    disabled={oauthBusy || !oauthCode.trim()}
+                  >
+                    {oauthBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+                    Finish sign-in
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Button variant="secondary" onClick={() => void beginSignIn()} disabled={oauthBusy}>
+                {oauthBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="h-4 w-4" />
+                )}
+                Start sign-in
+              </Button>
+            )}
+            <ErrorText>{oauthError}</ErrorText>
+          </div>
+        ) : null}
+
         <ErrorText>{error}</ErrorText>
       </div>
     </div>

@@ -4,7 +4,7 @@ Deliberately built on Core SQL rather than the ORM: `EncryptedText` decrypts on 
 model-based pass could not tell whether a stored value was already ciphertext. That prefix check
 is what makes the backfill, the rotation and the copy script idempotent.
 
-Every pass works on the two `(table, column)` pairs below, which are literals in this module —
+Every pass works on the `(table, column)` pairs below, which are literals in this module —
 no SQL fragment is ever built from input.
 """
 
@@ -25,7 +25,23 @@ from app.core.crypto import (
 
 logger = logging.getLogger(__name__)
 
-CREDENTIAL_COLUMNS = (("version_control_keys", "token"), ("llm_keys", "api_key"))
+# Every EncryptedText column in the schema. A new secret column belongs here in the same change,
+# or key rotation and the plaintext scan silently skip it. Historical migrations must pin the
+# subset that existed at their revision instead of using this list — see 0011
+# (`encrypt_plaintext(..., columns=...)`), because a later table does not exist yet there.
+CREDENTIAL_COLUMNS = (
+    ("version_control_keys", "token"),
+    ("llm_keys", "api_key"),
+    ("llm_keys", "refresh_token"),
+    ("claude_oauth_states", "verifier"),
+)
+
+Columns = tuple[tuple[str, str], ...]
+
+
+def _label(table: str, column: str) -> str:
+    """One key per column: `llm_keys` carries two secrets, so the table name is not unique."""
+    return f"{table}.{column}"
 
 
 def _rows(connection: Connection, table: str, column: str) -> list[tuple[int, str | None]]:
@@ -45,14 +61,16 @@ def _write(connection: Connection, table: str, column: str, row_id: int, value: 
     )
 
 
-def encrypt_plaintext(connection: Connection) -> dict[str, int]:
-    """Encrypt every stored value that is still plaintext; returns rows changed per table.
+def encrypt_plaintext(
+    connection: Connection, *, columns: Columns | None = None
+) -> dict[str, int]:
+    """Encrypt every stored value that is still plaintext; returns rows changed per column.
 
     Raises `CredentialKeyError` when rows need encrypting and no key is configured, so an
     upgrade cannot claim "encrypted at rest" while leaving clear text behind.
     """
     counts: dict[str, int] = {}
-    for table, column in CREDENTIAL_COLUMNS:
+    for table, column in columns or CREDENTIAL_COLUMNS:
         pending = [
             (row_id, value)
             for row_id, value in _rows(connection, table, column)
@@ -66,16 +84,16 @@ def encrypt_plaintext(connection: Connection) -> dict[str, int]:
             )
         for row_id, value in pending:
             _write(connection, table, column, row_id, encrypt_secret(value))
-        counts[table] = len(pending)
+        counts[_label(table, column)] = len(pending)
         if pending:
             logger.info("Encrypted %s plaintext value(s) in %s.%s", len(pending), table, column)
     return counts
 
 
-def decrypt_all(connection: Connection) -> dict[str, int]:
+def decrypt_all(connection: Connection, *, columns: Columns | None = None) -> dict[str, int]:
     """Restore plaintext, for `alembic downgrade`. The key set must still be configured."""
     counts: dict[str, int] = {}
-    for table, column in CREDENTIAL_COLUMNS:
+    for table, column in columns or CREDENTIAL_COLUMNS:
         encrypted = [
             (row_id, value)
             for row_id, value in _rows(connection, table, column)
@@ -83,7 +101,7 @@ def decrypt_all(connection: Connection) -> dict[str, int]:
         ]
         for row_id, value in encrypted:
             _write(connection, table, column, row_id, decrypt_secret(value))
-        counts[table] = len(encrypted)
+        counts[_label(table, column)] = len(encrypted)
         if encrypted:
             logger.info("Decrypted %s value(s) in %s.%s", len(encrypted), table, column)
     return counts
@@ -102,7 +120,7 @@ def reencrypt_all(connection: Connection, *, dry_run: bool = False) -> dict[str,
             plaintext = decrypt_secret(value)
             if not dry_run:
                 _write(connection, table, column, row_id, encrypt_secret(plaintext))
-        counts[table] = len(rows)
+        counts[_label(table, column)] = len(rows)
     return counts
 
 

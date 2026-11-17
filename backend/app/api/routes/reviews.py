@@ -31,6 +31,7 @@ from app.schemas.review import (
     LessonApplyRequest,
     LessonApplyResponse,
     LessonDraftResponse,
+    ReviewNotifications,
     RoundDecisionRequest,
     RoundDecisionResponse,
     SyncResponse,
@@ -44,6 +45,7 @@ from app.services import (
     comparison,
     keys_service,
     lessons_service,
+    review_notifications as review_notifications_service,
     settings_service,
     thread_sync,
     vcs,
@@ -84,6 +86,16 @@ def _owned_review(db: Session, user_id: int, review_id: int) -> CodeReview:
     if row is None:
         raise HTTPException(status_code=404, detail="Review not found")
     return row
+
+
+@router.get("/notifications", response_model=ReviewNotifications)
+def review_notifications(user: CurrentUser, db: Session = Depends(get_db)) -> ReviewNotifications:
+    """The Reviews badge: how many finished reviews the operator has not opened.
+
+    Declared before `/{review_id}` so the literal segment is never parsed as an id.
+    """
+    mark_stale_running_reviews()
+    return ReviewNotifications(unread_count=review_notifications_service.unread_count(db, user.id))
 
 
 @router.get("", response_model=list[CodeReviewSummary])
@@ -147,6 +159,19 @@ def get_review(
     return _detail(db, _owned_review(db, user.id, review_id))
 
 
+@router.post("/{review_id}/seen", response_model=CodeReviewSummary)
+def mark_review_seen(
+    review_id: int, user: CurrentUser, db: Session = Depends(get_db)
+) -> CodeReviewSummary:
+    """Acknowledge this review's finished state so it stops counting as a notification.
+
+    Idempotent, and a `running` review is untouched: opening the workspace early must not swallow
+    the notification the job will produce when it finishes.
+    """
+    review = review_notifications_service.mark_seen(db, _owned_review(db, user.id, review_id))
+    return CodeReviewSummary.from_row(review)
+
+
 @router.post("/{review_id}/discuss", response_model=DiscussResponse)
 async def discuss_review(
     review_id: int,
@@ -183,7 +208,7 @@ async def discuss_review_stream(
     """
     review = _owned_review(db, user.id, review_id)
     try:
-        prepared = prepare_discussion(db, review, payload.threads)
+        prepared = await prepare_discussion(db, review, payload.threads)
     except PipelineError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

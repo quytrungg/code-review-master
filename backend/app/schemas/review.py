@@ -165,6 +165,8 @@ class CodeReviewSummary(BaseModel):
     # Set on a delta review: the review it continues, and what started it (`watch`).
     parent_review_id: int | None = None
     trigger: str | None = None
+    # A finished review the operator has not opened: the list shows a dot, the navbar counts it.
+    has_unread: bool = False
     # Filled on detail responses (`routes/reviews.py::_detail`); the list stays a single query.
     usage: ReviewUsage | None = None
     created_at: str | None = None
@@ -186,9 +188,16 @@ class CodeReviewSummary(BaseModel):
             thread_count=len(row.threads),
             parent_review_id=getattr(row, "parent_review_id", None),
             trigger=getattr(row, "trigger", None),
+            has_unread=bool(getattr(row, "has_unread", False)),
             created_at=iso_utc(row.created_at),
             updated_at=iso_utc(row.updated_at),
         )
+
+
+class ReviewNotifications(BaseModel):
+    """The navbar badge: finished reviews on this account that have not been opened."""
+
+    unread_count: int = 0
 
 
 class CodeReviewDetail(CodeReviewSummary):

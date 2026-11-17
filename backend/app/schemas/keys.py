@@ -91,6 +91,26 @@ class LLMKeyUpdate(BaseModel):
         return self
 
 
+class ClaudeOAuthStart(BaseModel):
+    """Everything the browser needs to open the Claude sign-in page."""
+
+    authorize_url: str
+    expires_at: str | None = None
+
+
+class ClaudeOAuthComplete(BaseModel):
+    """The code claude.ai shows; it may carry the state as `code#state`."""
+
+    code: str = Field(min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def _clean(self) -> "ClaudeOAuthComplete":
+        self.code = self.code.strip()
+        if not self.code:
+            raise ValueError("code cannot be empty")
+        return self
+
+
 class VersionControlKeyRead(BaseModel):
     id: int
     provider: str
@@ -125,6 +145,11 @@ class LLMKeyRead(BaseModel):
     label: str | None
     api_key_masked: str | None
     is_active: bool = False
+    # How this credential authenticates. A Claude sign-in reports `oauth`, keeps its refresh token
+    # server-side only, and shows when the access token stops working.
+    auth_type: str = "api_key"
+    has_refresh_token: bool = False
+    expires_at: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
     api_key: str | None = None  # only with ?reveal=true
@@ -139,6 +164,9 @@ class LLMKeyRead(BaseModel):
             label=row.label,
             api_key_masked=mask_secret(row.api_key),
             is_active=row.id == active_id,
+            auth_type=getattr(row, "auth_type", "api_key") or "api_key",
+            has_refresh_token=bool(getattr(row, "refresh_token", None)),
+            expires_at=iso_utc(getattr(row, "expires_at", None)),
             created_at=iso_utc(row.created_at),
             updated_at=iso_utc(row.updated_at),
             api_key=row.api_key if reveal else None,

@@ -74,6 +74,15 @@ export function SettingsPage() {
     await loadKeys();
   }
 
+  // A completed Claude sign-in behaves like adding an API key: the first model credential an
+  // account gets becomes active, so setup never stalls on a second click.
+  async function signedInLLM(key: LLMKey) {
+    const next =
+      settings?.llm_key_id == null ? await api.updateSettings({ llm_key_id: key.id }) : null;
+    await Promise.all([loadKeys(), refresh()]);
+    if (next) apply(next);
+  }
+
   async function deleteVersionControl(id: number) {
     await api.deleteVersionControlKey(id);
     await Promise.all([loadKeys(), refresh()]);
@@ -186,6 +195,7 @@ export function SettingsPage() {
             activeId={settings?.llm_key_id ?? null}
             onActivate={activateLLM}
             onCreate={createLLM}
+            onSignedIn={signedInLLM}
             onDelete={deleteLLM}
             onTest={(id) => api.testLLMKey(id)}
           />

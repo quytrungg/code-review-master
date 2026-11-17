@@ -4,6 +4,7 @@ import type {
   ApplyResponse,
   AuthUser,
   CachedPR,
+  ClaudeOAuthStart,
   CodeReviewDetail,
   CodeReviewSummary,
   ComparisonEstimate,
@@ -22,6 +23,7 @@ import type {
   LessonDraft,
   ModelCatalog,
   QuickReviewEvent,
+  ReviewNotifications,
   ReviewPolicy,
   ReviewPolicyCreate,
   ReviewVerdict,
@@ -154,6 +156,17 @@ export const api = {
   listLLMKeys: (reveal = false) =>
     request<LLMKey[]>(`/keys/llm${reveal ? "?reveal=true" : ""}`),
 
+  /** Start a Claude sign-in: returns the page the operator opens. */
+  startClaudeOAuth: () =>
+    request<ClaudeOAuthStart>("/keys/claude/oauth/start", { method: "POST" }),
+
+  /** Exchange the code claude.ai showed for a stored, refreshed credential. */
+  completeClaudeOAuth: (code: string) =>
+    request<LLMKey>("/keys/claude/oauth/complete", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+
   createLLMKey: (payload: LLMKeyCreate) =>
     request<LLMKey>("/keys/llm", { method: "POST", body: JSON.stringify(payload) }),
 
@@ -180,6 +193,13 @@ export const api = {
   eventsUrl: (reviewId: number) => `${BASE_URL}/reviews/${reviewId}/events`,
 
   getReview: (id: number) => request<CodeReviewDetail>(`/reviews/${id}`),
+
+  /** The Reviews badge: finished reviews this account has not opened. */
+  reviewNotifications: () => request<ReviewNotifications>("/reviews/notifications"),
+
+  /** Acknowledge a finished review so it stops counting as a notification. */
+  markReviewSeen: (id: number) =>
+    request<CodeReviewSummary>(`/reviews/${id}/seen`, { method: "POST" }),
 
   /**
    * The streaming discussion endpoint. `fetch` (not the JSON client) because the body is a

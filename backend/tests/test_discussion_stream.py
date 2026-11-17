@@ -203,7 +203,7 @@ def test_cancelled_stream_keeps_completed_thread_and_writes_nothing_else(client,
         with SessionLocal() as db:
             row = db.get(CodeReview, review["id"])
             assert row is not None
-            prepared = discussion.prepare_discussion(
+            prepared = await discussion.prepare_discussion(
                 db,
                 row,
                 [

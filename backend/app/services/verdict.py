@@ -185,7 +185,7 @@ async def _ask_document(
     an answer the reviewer can act on, while the advisory re-evaluation swallows them.
     """
     model = llm_service.parse_model_id(review.model_used or "")
-    credentials = keys_service.credentials_for_provider(db, review.user_id, model.provider)
+    credentials = await keys_service.credentials_for_provider(db, review.user_id, model.provider)
 
     bundle = skill_loader.load_bundle(language_hints(paths), root=_foundation_root(review))
     system_prompt = (

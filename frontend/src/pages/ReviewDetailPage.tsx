@@ -65,6 +65,15 @@ export function ReviewDetailPage() {
       const data = await api.getReview(reviewId);
       setReview(data);
       setVerdict(data.verdict ?? "COMMENT");
+      if (data.has_unread) {
+        // Opening the workspace is the acknowledgement; a failure must not break the page, so
+        // the notification simply survives to the next visit.
+        try {
+          await api.markReviewSeen(reviewId);
+        } catch {
+          /* best-effort */
+        }
+      }
     } catch (error) {
       if (error instanceof ApiError && error.status === 404) setNotFound(true);
       else setLoadError(error instanceof ApiError ? error.message : "Failed to load the review");

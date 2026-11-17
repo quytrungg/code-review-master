@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import CurrentUser, get_db
 from app.core.config import get_settings
+from app.models.keys import AUTH_OAUTH
 from app.schemas.review import ModelCatalog, ModelOption
 from app.services import keys_service, llm_service, skill_loader
 
@@ -30,16 +31,38 @@ async def list_models(user: CurrentUser, db: Session = Depends(get_db)) -> Model
             # A deployed function cannot reach the operator's local daemon: hide, don't offer it.
             continue
         if key.provider == "claude" and key.api_key:
-            for entry in await llm_service.list_claude_models(
-                key.api_key, base_url=key.effective_base_url
+            oauth = key.auth_type == AUTH_OAUTH
+            try:
+                token = await keys_service.access_token_for(key)
+            except keys_service.KeyError as exc:
+                # The sign-in could not be refreshed: show why instead of dropping Claude silently.
+                for entry in llm_service.CLAUDE_FALLBACK:
+                    _add(
+                        models,
+                        ModelOption(
+                            id=f"{llm_service.CLAUDE}:{entry['id']}",
+                            label=entry["label"],
+                            provider=llm_service.CLAUDE,
+                            available=False,
+                            note=exc.detail,
+                        ),
+                    )
+                continue
+            entries = await llm_service.list_claude_models(
+                token, base_url=key.effective_base_url, oauth=oauth
+            )
+            if key.default_model and not any(
+                entry["id"] == key.default_model for entry in entries
             ):
+                entries.append({"id": key.default_model, "label": key.default_model})
+            for entry in entries:
                 _add(
                     models,
                     ModelOption(
                         id=f"{llm_service.CLAUDE}:{entry['id']}",
                         label=entry.get("label") or entry["id"],
                         provider=llm_service.CLAUDE,
-                        note=note or "Anthropic",
+                        note=note or ("Claude sign-in" if oauth else "Anthropic"),
                     ),
                 )
         elif key.provider == "openai" and key.api_key:

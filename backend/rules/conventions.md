@@ -10,11 +10,13 @@ keys in `providers-and-keys.md`, data safety in `database.md`, PII in `privacy.m
 ## Services
 
 `vcs` (fetch/publish dispatch by host) · `github_service` · `gitlab_service` · `keys_service` ·
+`claude_oauth_service` (Claude sign-in: PKCE state, code exchange and access-token refresh) ·
 `diff_parser` · `skill_loader` · `skills_service` · `prompts` · `llm_service` · `review_pipeline` ·
 `review_units` (packs a large diff into per-file parts) · `checks_service` (deterministic pre-pass
 packs: data-driven rules, anchored through the pipeline) · `watch_service` (watches, ticks,
 delta reviews) · `policy_service` (standing policies evaluated on the watch tick) · `thread_sync` ·
 `discussion` · `references` (`#N`) · `summarise` · `verdict` · `apply_service` · `progress` ·
+`review_notifications` (which finished reviews are still unread, and acknowledging one) ·
 `auth_service` · `secrets`, `settings_service` · `ledger` (one `llm_calls` row per call, own
 session, never raises) · `analytics` (the `/api/analytics` aggregates and a review's usage line) ·
 `finding_search` (normalised finding key, cross-review search, recurring groups) · `comparison`

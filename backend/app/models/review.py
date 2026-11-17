@@ -125,6 +125,11 @@ class CodeReview(Base):
     suggested_verdict_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the operator acknowledged this review's finished state. NULL on a finished review means
+    # it is a notification: the dashboard row shows a dot and the navbar counts it.
+    completed_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     github_review_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Set on a delta review: the review it continues, the watch that produced it, and why it exists.
     parent_review_id: Mapped[int | None] = mapped_column(
@@ -158,6 +163,14 @@ class CodeReview(Base):
         order_by="VerdictPushback.id",
         lazy="selectin",
     )
+
+    @property
+    def has_unread(self) -> bool:
+        """A finished review nobody has looked at yet is the one thing this app notifies about.
+
+        `running` is excluded on purpose: the notification is about the result, not the work.
+        """
+        return self.status != ReviewStatus.RUNNING and self.completed_seen_at is None
 
 
 class ReviewThread(Base):
