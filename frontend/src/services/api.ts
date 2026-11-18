@@ -310,7 +310,7 @@ export const api = {
     const params = new URLSearchParams();
     if (filters.status) params.set("status", filters.status);
     if (filters.repo) params.set("repo", filters.repo);
-    if (filters.unread) params.set("unread", "true");
+    if (filters.attention) params.set("attention", "true");
     const suffix = params.size ? `?${params.toString()}` : "";
     return request<CachedPR[]>(`/inbox${suffix}`);
   },

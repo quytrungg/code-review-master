@@ -2,23 +2,26 @@
 
 One sync is per-account and deliberate (`POST /api/inbox/sync`): discovery runs against the GitHub
 search API (`review-requested:` the user, `team-review-requested:` one of the user's teams,
-`commenter:` the user), results are deduped on the PR URL, and each open PR is reconciled into a
-`cached_prs` row the inbox can render without touching GitHub again.
+`commenter:` the user), limited to PRs created in the last two months, results are deduped on the
+PR URL, and each open PR is reconciled into a `cached_prs` row the inbox can render without
+touching GitHub again.
 
 Turn-taking is recomputed from GitHub truth on every sync, not stored as app state: the user's
-latest submitted review gives the base status, and any reply newer than `last_user_action_at`
-from someone else re-arms the row to `needs_review` with an unread count. An action taken on
-GitHub itself (an approval posted from the web UI) moves the clock in exactly the same way.
+latest submitted review gives the reviewed status, and any reply newer than `last_user_action_at`
+from someone else adds an unread count without changing that status. `needs_attention` is therefore
+`needs_review OR has_unread_replies`. An action taken on GitHub itself (an approval posted from the
+web UI) moves the clock in exactly the same way.
 Status detection is best-effort: one PR that cannot be read (rate limit, deleted repo) becomes a
 warning line and keeps its previous cached row; the rest of the sync still completes.
 """
 
 from __future__ import annotations
 
+import calendar
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import case, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.db.base import utcnow
@@ -44,6 +47,17 @@ _STATUS_EVENT_FOR = {
 QUICK_EVENTS = tuple(_STATUS_EVENT_FOR)
 _EVENTS_REQUIRING_BODY = ("REQUEST_CHANGES", "COMMENT")
 
+# Discovery is a triage queue, not an archive: a PR opened long ago is not the user's current turn.
+DISCOVERY_WINDOW_MONTHS = 2
+
+
+def _months_ago(now: datetime, months: int) -> date:
+    """`now` shifted back whole calendar months, the day clamped to the target month's length."""
+    month_index = now.month - 1 - months
+    year = now.year + month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, min(now.day, calendar.monthrange(year, month)[1]))
+
 
 def _parse_ts(value) -> datetime | None:
     """A GitHub `2026-11-01T10:00:00Z` timestamp, tz-aware; None on anything else."""
@@ -65,18 +79,21 @@ def _github_key(db: Session, user_id: int):
     return key
 
 
-def _queries(login: str, teams: list[dict]) -> list[str]:
+def _queries(login: str, teams: list[dict], created_since: date) -> list[str]:
+    created = f"created:>={created_since.isoformat()}"
     queries = [
-        f"is:pr is:open review-requested:{login} archived:false",
-        f"is:pr is:open commenter:{login} archived:false",
-        f"is:pr is:open author:{login} archived:false",
-        f"is:pr is:open assignee:{login} archived:false",
+        f"is:pr is:open review-requested:{login} archived:false {created}",
+        f"is:pr is:open commenter:{login} archived:false {created}",
+        f"is:pr is:open author:{login} archived:false {created}",
+        f"is:pr is:open assignee:{login} archived:false {created}",
     ]
     for team in teams:
         org = (team.get("organization") or {}).get("login")
         slug = team.get("slug")
         if org and slug:
-            queries.append(f"is:pr is:open team-review-requested:{org}/{slug} archived:false")
+            queries.append(
+                f"is:pr is:open team-review-requested:{org}/{slug} archived:false {created}"
+            )
     return queries
 
 
@@ -88,7 +105,11 @@ async def _discover(token: str, base_url: str | None, login: str) -> tuple[list[
     """
     merged: dict[str, dict] = {}
     commented: set[str] = set()
-    for query in _queries(login, await github_service.fetch_teams(token, base_url=base_url)):
+    created_since = _months_ago(utcnow(), DISCOVERY_WINDOW_MONTHS)
+    query_list = _queries(
+        login, await github_service.fetch_teams(token, base_url=base_url), created_since
+    )
+    for query in query_list:
         for item in await github_service.search_open_prs(token, query, base_url=base_url):
             url = item.get("html_url") or ""
             if not url or item.get("pull_request") is None:
@@ -159,7 +180,7 @@ async def _detect_status(
         state = InboxStatus.NEEDS_REVIEW
 
     unread = 0
-    if state in InboxStatus.ACTIONABLE and last_action is not None:
+    if state in InboxStatus.REVIEWED_STATUSES and last_action is not None:
         unread = sum(
             1
             for entry in comments
@@ -167,9 +188,6 @@ async def _detect_status(
             and (_parse_ts(entry.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
             > last_action
         )
-        if unread:
-            # Someone answered after the user's last move: it is the user's turn again.
-            state = InboxStatus.NEEDS_REVIEW
 
     return {
         "status": state,
@@ -285,30 +303,50 @@ async def sync_inbox(
     return list_inbox(db, user_id), gone, warnings
 
 
+def _needs_attention():
+    """The one definition of "needs attention": first review, or a reply after the review."""
+    return or_(
+        CachedPR.status == InboxStatus.NEEDS_REVIEW,
+        CachedPR.has_unread_replies.is_(True),
+    )
+
+
 def list_inbox(
     db: Session,
     user_id: int,
     *,
     status: str | None = None,
     repo: str | None = None,
-    unread: bool = False,
+    attention: bool = False,
 ) -> list[CachedPR]:
     query = select(CachedPR).where(CachedPR.user_id == user_id)
     if status:
-        if status not in InboxStatus.ALL:
+        if status not in InboxStatus.FILTERS:
             raise KeyError(
-                f"Unknown status '{status}'. Expected one of: {', '.join(InboxStatus.ALL)}.", 422
+                f"Unknown status '{status}'. Expected one of: {', '.join(InboxStatus.FILTERS)}.",
+                422,
             )
-        query = query.where(CachedPR.status == status)
+        if status == InboxStatus.REVIEWED:
+            query = query.where(CachedPR.status.in_(InboxStatus.REVIEWED_STATUSES))
+        else:
+            query = query.where(CachedPR.status == status)
     if repo:
         if "/" not in repo:
             raise KeyError("Filter `repo` expects `owner/name`.", 422)
         owner, _, name = repo.partition("/")
         query = query.where(CachedPR.repo_owner == owner, CachedPR.repo_name == name)
-    if unread:
-        query = query.where(CachedPR.has_unread_replies.is_(True))
+    if attention:
+        query = query.where(_needs_attention())
+    # Attention first (newest activity within each group); reviewed clean rows settle at the bottom.
+    attention_order = case((_needs_attention(), 0), else_=1)
     return list(
-        db.scalars(query.order_by(CachedPR.last_github_activity_at.desc(), CachedPR.id.desc()))
+        db.scalars(
+            query.order_by(
+                attention_order,
+                CachedPR.last_github_activity_at.desc(),
+                CachedPR.id.desc(),
+            )
+        )
     )
 
 

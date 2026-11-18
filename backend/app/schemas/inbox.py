@@ -17,6 +17,8 @@ class CachedPRRead(BaseModel):
     author_username: str
     author_avatar_url: str | None = None
     status: str = "needs_review"
+    # Needs a first review, or someone replied after the user's last review/comment.
+    needs_attention: bool = False
     has_unread_replies: bool = False
     unread_replies_count: int = 0
     last_user_action_at: str | None = None
@@ -37,6 +39,7 @@ class CachedPRRead(BaseModel):
             author_username=row.author_username,
             author_avatar_url=row.author_avatar_url,
             status=row.status,
+            needs_attention=row.needs_attention,
             has_unread_replies=bool(row.has_unread_replies),
             unread_replies_count=row.unread_replies_count,
             last_user_action_at=iso_utc(row.last_user_action_at),

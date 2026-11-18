@@ -1,6 +1,8 @@
 export type ReviewStatus = "running" | "draft" | "in_discussion" | "applied" | "failed";
 export type ReviewVerdict = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 export type InboxStatus = "needs_review" | "approved" | "request_changed" | "commented";
+/** The inbox filter collapses the three reviewed statuses into one option. */
+export type InboxStatusFilter = "needs_review" | "reviewed";
 export type CachedPRInvolvement = "reviewer" | "assignee" | "author";
 export type QuickReviewEvent = ReviewVerdict;
 export type MessageRole = "assistant" | "user" | "system";
@@ -408,6 +410,8 @@ export interface CachedPR {
   author_username: string;
   author_avatar_url: string | null;
   status: InboxStatus;
+  /** Needs a first review, or someone replied after the last review/comment. */
+  needs_attention: boolean;
   involvement: CachedPRInvolvement;
   has_unread_replies: boolean;
   unread_replies_count: number;
@@ -424,9 +428,9 @@ export interface InboxSyncResponse {
 }
 
 export interface InboxFilters {
-  status?: InboxStatus;
+  status?: InboxStatusFilter;
   repo?: string;
-  unread?: boolean;
+  attention?: boolean;
 }
 
 export interface ReviewWatch {

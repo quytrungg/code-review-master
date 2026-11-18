@@ -32,7 +32,7 @@ export function Navbar() {
     let cancelled = false;
     const loadInbox = () =>
       api
-        .listInbox({ unread: true })
+        .listInbox({ attention: true })
         .then((rows) => {
           if (!cancelled) setBadges((current) => ({ ...current, inbox: rows.length }));
         })
@@ -99,7 +99,13 @@ export function Navbar() {
               {badge && badges[badge] > 0 ? (
                 <span
                   className="grid h-4 min-w-4 place-items-center rounded-full bg-accentStrong px-1 text-[10px] font-semibold text-white"
-                  title={`${badges[badge]} unread`}
+                  title={
+                    badge === "inbox"
+                      ? `${badges[badge]} pull ${
+                          badges[badge] === 1 ? "request needs" : "requests need"
+                        } attention`
+                      : `${badges[badge]} unread`
+                  }
                 >
                   {badges[badge]}
                 </span>

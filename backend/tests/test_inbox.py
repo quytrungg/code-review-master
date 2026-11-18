@@ -7,9 +7,12 @@ no network.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
 from tests.fixtures import PR_URL, as_result, provision
 
 SECOND_PR_URL = "https://github.com/other/lib/pull/5"
+THIRD_PR_URL = "https://github.com/other/tools/pull/7"
 T0 = "2026-11-01T10:00:00Z"
 
 
@@ -122,6 +125,7 @@ def test_sync_caches_and_dedupes(client, monkeypatch):
     assert urls == [SECOND_PR_URL, PR_URL] or sorted(urls) == sorted({PR_URL, SECOND_PR_URL})
     assert len(set(urls)) == 2
     assert all(item["status"] == "needs_review" for item in body["items"])
+    assert all(item["needs_attention"] is True for item in body["items"])
     assert any("review-requested:alice" in query for query in recorded["queries"])
     assert any("commenter:alice" in query for query in recorded["queries"])
 
@@ -136,11 +140,35 @@ def test_sync_queries_teams(client, monkeypatch):
     assert any("team-review-requested:acme/apex" in query for query in recorded["queries"])
 
 
+def test_sync_only_discovers_prs_created_in_last_two_months(client, monkeypatch):
+    from app.services import github_inbox_service
+
+    provision(client)
+    monkeypatch.setattr(
+        github_inbox_service, "utcnow", lambda: datetime(2026, 11, 17, tzinfo=timezone.utc)
+    )
+    recorded = stub_github(
+        monkeypatch, teams=[{"slug": "apex", "organization": {"login": "acme"}}], items=[]
+    )
+    response = client.post("/api/inbox/sync")
+    assert response.status_code == 200, response.text
+    assert recorded["queries"]
+    assert all("created:>=2026-09-17" in query for query in recorded["queries"])
+
+
+def test_months_ago_clamps_month_end():
+    from app.services.github_inbox_service import _months_ago
+
+    assert _months_ago(datetime(2026, 4, 30, tzinfo=timezone.utc), 2) == date(2026, 2, 28)
+    assert _months_ago(datetime(2026, 11, 17, tzinfo=timezone.utc), 2) == date(2026, 9, 17)
+
+
 def test_status_from_latest_own_review(client, monkeypatch):
     provision(client)
     stub_github(monkeypatch, items=[_item(PR_URL)], reviews=[_review("CHANGES_REQUESTED")])
     item = client.post("/api/inbox/sync").json()["items"][0]
     assert item["status"] == "request_changed"
+    assert item["needs_attention"] is False
     assert item["last_user_action_at"] == T0
 
 
@@ -152,7 +180,7 @@ def test_comment_only_marks_commented(client, monkeypatch):
     assert item["last_user_action_at"] == "2026-11-02T08:00:00Z"
 
 
-def test_inbound_reply_reverts_to_needs_review(client, monkeypatch):
+def test_inbound_reply_keeps_reviewed_and_counts_unread(client, monkeypatch):
     provision(client)
     stub_github(
         monkeypatch,
@@ -164,11 +192,13 @@ def test_inbound_reply_reverts_to_needs_review(client, monkeypatch):
         ],
     )
     item = client.post("/api/inbox/sync").json()["items"][0]
-    assert item["status"] == "needs_review"
+    # A reply is a badge, not a new turn: the user's approval still describes the row as Reviewed.
+    assert item["status"] == "approved"
+    assert item["needs_attention"] is True
     assert item["has_unread_replies"] is True
     assert item["unread_replies_count"] == 2
 
-    listed = client.get("/api/inbox", params={"unread": "true"})
+    listed = client.get("/api/inbox", params={"attention": "true"})
     assert listed.status_code == 200, listed.text
     assert [row["pr_url"] for row in listed.json()] == [PR_URL]
 
@@ -183,6 +213,7 @@ def test_own_reply_after_review_stays_approved(client, monkeypatch):
     )
     item = client.post("/api/inbox/sync").json()["items"][0]
     assert item["status"] == "approved"
+    assert item["needs_attention"] is False
     assert item["has_unread_replies"] is False
 
 
@@ -229,8 +260,53 @@ def test_inbox_filters(client, monkeypatch):
     by_repo = client.get("/api/inbox", params={"repo": "octo/example"})
     assert [row["pr_url"] for row in by_repo.json()] == [PR_URL]
     assert len(client.get("/api/inbox", params={"status": "needs_review"}).json()) == 2
+    assert client.get("/api/inbox", params={"status": "reviewed"}).json() == []
+    assert len(client.get("/api/inbox", params={"attention": "true"}).json()) == 2
     assert client.get("/api/inbox", params={"status": "nonsense"}).status_code == 422
     assert client.get("/api/inbox", params={"repo": "nonsense"}).status_code == 422
+
+
+def test_reviewed_rows_sort_below_attention_rows(client, monkeypatch):
+    provision(client)
+    stub_github(
+        monkeypatch,
+        items=[
+            _item(PR_URL, gid=1, updated="2026-11-10T10:00:00Z"),
+            _item(SECOND_PR_URL, gid=2, updated="2026-11-01T10:00:00Z"),
+            _item(THIRD_PR_URL, gid=3, updated="2026-10-20T10:00:00Z"),
+        ],
+    )
+    client.post("/api/inbox/sync")
+
+    from sqlalchemy import select
+
+    from app.db.session import SessionLocal
+    from app.models.cached_pr import CachedPR, InboxStatus
+
+    db = SessionLocal()
+    try:
+        # PR_URL: reviewed, newest activity — must still sink below attention rows.
+        first = db.scalars(select(CachedPR).where(CachedPR.pr_url == PR_URL)).first()
+        first.status = InboxStatus.APPROVED
+        # SECOND_PR_URL stays needs_review (older). THIRD_PR_URL is reviewed with an unread reply.
+        third = db.scalars(select(CachedPR).where(CachedPR.pr_url == THIRD_PR_URL)).first()
+        third.status = InboxStatus.COMMENTED
+        third.has_unread_replies = True
+        third.unread_replies_count = 1
+        db.commit()
+    finally:
+        db.close()
+
+    listed = client.get("/api/inbox").json()
+    assert [row["pr_url"] for row in listed] == [SECOND_PR_URL, THIRD_PR_URL, PR_URL]
+    assert [row["needs_attention"] for row in listed] == [True, True, False]
+
+    attention = client.get("/api/inbox", params={"attention": "true"}).json()
+    assert [row["pr_url"] for row in attention] == [SECOND_PR_URL, THIRD_PR_URL]
+
+    reviewed = client.get("/api/inbox", params={"status": "reviewed"}).json()
+    # Within Reviewed, the row with an unread reply still pops above the clean one.
+    assert [row["pr_url"] for row in reviewed] == [THIRD_PR_URL, PR_URL]
 
 
 def test_quick_review_posts_and_resets(client, monkeypatch):
@@ -251,6 +327,7 @@ def test_quick_review_posts_and_resets(client, monkeypatch):
     assert response.status_code == 200, response.text
     updated = response.json()
     assert updated["status"] == "request_changed"
+    assert updated["needs_attention"] is False
     assert updated["has_unread_replies"] is False
     assert updated["unread_replies_count"] == 0
     assert updated["last_user_action_at"] is not None
@@ -349,7 +426,7 @@ def test_sync_includes_authored_and_assigned_prs(client, monkeypatch):
     assert any("assignee:alice" in query for query in recorded["queries"])
 
 
-def test_authored_pr_replies_rearm_needs_review(client, monkeypatch):
+def test_authored_pr_reply_keeps_commented_with_unread(client, monkeypatch):
     provision(client)
     own = dict(_item(PR_URL), user={"login": "alice"})
     stub_github(
@@ -361,9 +438,10 @@ def test_authored_pr_replies_rearm_needs_review(client, monkeypatch):
         ],
     )
     item = client.post("/api/inbox/sync").json()["items"][0]
-    # On an authored PR, needs_review means "someone replied to your PR — your turn".
+    # The user already commented, so the row stays Reviewed; the reply only makes it attention.
     assert item["involvement"] == "author"
-    assert item["status"] == "needs_review"
+    assert item["status"] == "commented"
+    assert item["needs_attention"] is True
     assert item["unread_replies_count"] == 1
 
 

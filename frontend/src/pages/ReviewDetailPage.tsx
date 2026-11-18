@@ -116,12 +116,22 @@ export function ReviewDetailPage() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // The code pane owns its own scroll box, so a selection made on either side moves it here. The
+  // discussion card does the mirror image through its `selected` effect in CommentBox.
+  function scrollToCode(threadId: number) {
+    codeRefs.current[threadId]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
   function select(threadId: number) {
     setSelectedId((current) => (current === threadId ? null : threadId));
-    const node = codeRefs.current[threadId];
-    if (node && selectedId !== threadId) {
-      node.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    }
+    if (selectedId !== threadId) scrollToCode(threadId);
+  }
+
+  // Selecting from the discussion pane must not toggle: the operator is reading a thread, not
+  // closing it, and this also runs when the composer takes focus.
+  function selectDiscussion(threadId: number) {
+    setSelectedId(threadId);
+    scrollToCode(threadId);
   }
 
   function jumpToOrdinal(ordinal: number) {
@@ -437,7 +447,7 @@ export function ReviewDetailPage() {
               draft={drafts[thread.id] ?? ""}
               threadCount={threads.length}
               threadOptions={threadOptions}
-              onSelect={() => setSelectedId(thread.id)}
+              onSelect={() => selectDiscussion(thread.id)}
               onDraftChange={(value) => setDraft(thread.id, value)}
               onJumpToOrdinal={jumpToOrdinal}
               onDecide={handleDecide}

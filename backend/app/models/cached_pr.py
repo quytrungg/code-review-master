@@ -4,6 +4,7 @@ One row per (account, change request). The cache is rebuilt by `github_inbox_ser
 rows for PRs that are no longer open and matching are deleted, matches are upserted. Status and
 unread state are recomputed from GitHub on every sync — `last_user_action_at` is GitHub truth (the
 latest own review or comment), not app truth, so an action taken on GitHub itself moves the clock.
+A later reply never overwrites the status: the row stays reviewed and gains an unread count.
 """
 
 from __future__ import annotations
@@ -33,10 +34,14 @@ class InboxStatus:
     APPROVED = "approved"
     REQUEST_CHANGED = "request_changed"
     COMMENTED = "commented"
+    # Filter-only token: the UI collapses the three reviewed statuses into one label.
+    REVIEWED = "reviewed"
 
-    ALL = (NEEDS_REVIEW, APPROVED, REQUEST_CHANGED, COMMENTED)
-    # Statuses an inbound reply can re-arm back to NEEDS_REVIEW.
-    ACTIONABLE = (APPROVED, REQUEST_CHANGED, COMMENTED)
+    # The three stored statuses in which the user has already reviewed the PR.
+    REVIEWED_STATUSES = (APPROVED, REQUEST_CHANGED, COMMENTED)
+    ALL = (NEEDS_REVIEW, *REVIEWED_STATUSES)
+    # Accepted by GET /api/inbox?status=; REVIEWED matches any of the three reviewed statuses.
+    FILTERS = (REVIEWED, *ALL)
 
 
 class InboxInvolvement:
@@ -104,3 +109,8 @@ class CachedPR(Base):
     last_synced_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow
     )
+
+    @property
+    def needs_attention(self) -> bool:
+        """True until the user reviews it, and again when someone replies after that review."""
+        return self.status == InboxStatus.NEEDS_REVIEW or bool(self.has_unread_replies)

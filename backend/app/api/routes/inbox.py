@@ -32,12 +32,12 @@ def list_inbox(
     user: CurrentUser,
     status: str | None = None,
     repo: str | None = None,
-    unread: bool = False,
+    attention: bool = False,
     db: Session = Depends(get_db),
 ) -> list[CachedPRRead]:
     try:
         rows = github_inbox_service.list_inbox(
-            db, user.id, status=status, repo=repo, unread=unread
+            db, user.id, status=status, repo=repo, attention=attention
         )
     except KeyError as exc:
         raise _map(exc) from exc

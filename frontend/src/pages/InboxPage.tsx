@@ -1,32 +1,45 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
-  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   ExternalLink,
   GitPullRequest,
   Inbox,
   Loader2,
-  MessageSquare,
   RefreshCw,
-  ShieldX,
   Sparkles,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
+import { InboxActionsMenu } from "@/components/InboxActionsMenu";
 import { QuickReviewPanel } from "@/components/QuickReviewPanel";
 import { StartReviewModal } from "@/components/StartReviewModal";
 import { api, ApiError } from "@/services/api";
 import { relativeTime } from "@/lib/utils";
-import type { CachedPR, InboxStatus, QuickReviewEvent } from "@/types";
+import type { CachedPR, InboxStatus, InboxStatusFilter, QuickReviewEvent } from "@/types";
 
-const STATUS_META: Record<InboxStatus, { label: string; tone: "warning" | "success" | "danger" | "accent" }> = {
+const STATUS_META: Record<
+  InboxStatus,
+  { label: string; tone: "neutral" | "warning" }
+> = {
   needs_review: { label: "Needs review", tone: "warning" },
-  approved: { label: "Approved", tone: "success" },
-  request_changed: { label: "Changes requested", tone: "danger" },
-  commented: { label: "Commented", tone: "accent" },
+  // The exact action is stored, but the inbox collapses it into one card label.
+  approved: { label: "Reviewed", tone: "neutral" },
+  request_changed: { label: "Reviewed", tone: "neutral" },
+  commented: { label: "Reviewed", tone: "neutral" },
 };
+
+const STATUS_FILTERS: { value: InboxStatusFilter | ""; label: string }[] = [
+  { value: "", label: "Every status" },
+  { value: "needs_review", label: "Needs review" },
+  { value: "reviewed", label: "Reviewed" },
+];
+
+const PAGE_SIZES = [10, 20, 50, 100];
+const DEFAULT_PAGE_SIZE = 10;
 
 export function InboxPage() {
   const navigate = useNavigate();
@@ -38,9 +51,11 @@ export function InboxPage() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<InboxStatus | "">("needs_review");
+  const [statusFilter, setStatusFilter] = useState<InboxStatusFilter | "">("");
   const [repoFilter, setRepoFilter] = useState("");
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [quickAction, setQuickAction] = useState<{ pr: CachedPR; event: QuickReviewEvent } | null>(null);
   const [startTarget, setStartTarget] = useState<CachedPR | null>(null);
 
@@ -51,7 +66,7 @@ export function InboxPage() {
         api.listInbox({
           status: statusFilter || undefined,
           repo: repoFilter || undefined,
-          unread: unreadOnly || undefined,
+          attention: attentionOnly || undefined,
         }),
         api.listInbox(),
       ]);
@@ -62,11 +77,16 @@ export function InboxPage() {
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, repoFilter, unreadOnly]);
+  }, [statusFilter, repoFilter, attentionOnly]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A new filter starts a new result set, so the reader belongs on its first page.
+  useEffect(() => {
+    setPage(0);
+  }, [statusFilter, repoFilter, attentionOnly]);
 
   async function sync() {
     setSyncing(true);
@@ -76,7 +96,7 @@ export function InboxPage() {
       const result = await api.syncInbox();
       setItems(result.items);
       setRepos([...new Set(result.items.map((pr) => `${pr.repo_owner}/${pr.repo_name}`))].sort());
-      const dropped = result.disappeared ? `, ${result.disappeared} closed` : "";
+      const dropped = result.disappeared ? `, ${result.disappeared} removed` : "";
       setNotice(
         `Synced ${result.items.length} pull request${result.items.length === 1 ? "" : "s"}${dropped}.` +
           (result.warnings.length ? ` ${result.warnings.length} could not be refreshed.` : ""),
@@ -101,7 +121,15 @@ export function InboxPage() {
     setItems((current) => current.map((row) => (row.id === updated.id ? updated : row)));
     setQuickAction(null);
     setNotice("Review posted to GitHub.");
+    // The row just moved from Needs review to Reviewed; reload so it settles at the bottom.
+    void load();
   }
+
+  // Derived, so a shrinking list or a smaller page size can never strand the reader on an empty page.
+  const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const firstItem = currentPage * pageSize;
+  const visibleItems = items.slice(firstItem, firstItem + pageSize);
 
   return (
     <div className="space-y-6">
@@ -109,8 +137,9 @@ export function InboxPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">PR Inbox</h1>
           <p className="text-sm text-inkMuted">
-            Open pull requests waiting on you or your teams. Sync re-reads GitHub; the list is a
-            local cache and costs no API calls between syncs.
+            Open pull requests waiting on you or your teams. Reviews you already made settle below,
+            and a reply after them brings the PR back up. Sync re-reads GitHub; the list is a local
+            cache and costs no API calls between syncs.
           </p>
         </div>
         <Button variant="secondary" onClick={() => void sync()} disabled={syncing}>
@@ -135,12 +164,11 @@ export function InboxPage() {
           aria-label="Filter by status"
           className="h-9 w-44 text-xs"
           value={statusFilter}
-          onChange={(event) => setStatusFilter(event.target.value as InboxStatus | "")}
+          onChange={(event) => setStatusFilter(event.target.value as InboxStatusFilter | "")}
         >
-          <option value="">Every status</option>
-          {(Object.keys(STATUS_META) as InboxStatus[]).map((status) => (
-            <option key={status} value={status}>
-              {STATUS_META[status].label}
+          {STATUS_FILTERS.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
             </option>
           ))}
         </Select>
@@ -158,11 +186,12 @@ export function InboxPage() {
           ))}
         </Select>
         <Button
-          variant={unreadOnly ? "secondary" : "ghost"}
+          variant={attentionOnly ? "secondary" : "ghost"}
           size="sm"
-          onClick={() => setUnreadOnly((current) => !current)}
+          aria-pressed={attentionOnly}
+          onClick={() => setAttentionOnly((current) => !current)}
         >
-          Unread replies only
+          Needs attention only
         </Button>
       </div>
 
@@ -175,9 +204,13 @@ export function InboxPage() {
           ) : items.length === 0 ? (
             <div className="rounded-xl border border-dashed border-borderStrong/70 p-8 text-center">
               <Inbox className="mx-auto h-6 w-6 text-inkMuted" />
-              <p className="mt-2 text-sm text-ink">Nothing is waiting on you</p>
+              <p className="mt-2 text-sm text-ink">
+                {attentionOnly ? "Nothing needs your attention" : "Nothing is waiting on you"}
+              </p>
               <p className="mt-1 text-xs text-inkMuted">
-                Sync reads your review requests and team queues from GitHub.
+                {attentionOnly
+                  ? "Every open pull request has been reviewed and has no new replies."
+                  : "Sync reads your review requests and team queues from GitHub."}
               </p>
               <Button className="mt-4" variant="secondary" size="sm" onClick={() => void sync()}>
                 Sync with GitHub
@@ -185,7 +218,7 @@ export function InboxPage() {
             </div>
           ) : (
             <ul className="space-y-2">
-              {items.map((pr) => {
+              {visibleItems.map((pr) => {
                 const meta = STATUS_META[pr.status];
                 return (
                   <li
@@ -198,6 +231,16 @@ export function InboxPage() {
                           <GitPullRequest className="h-4 w-4 text-inkMuted" />
                           <span className="text-sm font-medium text-ink">{pr.title}</span>
                           <span className="text-xs text-inkMuted">#{pr.pr_number}</span>
+                          <a
+                            href={pr.pr_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            aria-label={`Open ${pr.repo_owner}/${pr.repo_name}#${pr.pr_number} on GitHub`}
+                            title="Open on GitHub"
+                            className="inline-flex h-5 w-5 items-center justify-center rounded text-inkMuted transition-colors hover:bg-surfaceMuted/60 hover:text-ink"
+                          >
+                            <ExternalLink className="h-3.5 w-3.5" />
+                          </a>
                           {pr.involvement === "author" ? (
                             <Badge tone="neutral">Your PR</Badge>
                           ) : pr.involvement === "assignee" ? (
@@ -242,35 +285,9 @@ export function InboxPage() {
                           <Sparkles className="h-3.5 w-3.5" />
                           {pr.linked_review_id ? "Open review" : "AI review"}
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setQuickAction({ pr, event: "APPROVE" })}
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5 text-success" /> Approve
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setQuickAction({ pr, event: "REQUEST_CHANGES" })}
-                        >
-                          <ShieldX className="h-3.5 w-3.5 text-danger" /> Request changes
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setQuickAction({ pr, event: "COMMENT" })}
-                        >
-                          <MessageSquare className="h-3.5 w-3.5 text-accent" /> Comment
-                        </Button>
-                        <a
-                          href={pr.pr_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-transparent px-2.5 text-xs text-inkMuted transition-colors hover:bg-surfaceMuted/60 hover:text-ink"
-                        >
-                          <ExternalLink className="h-3.5 w-3.5" /> GitHub
-                        </a>
+                        <InboxActionsMenu
+                          onSelect={(event) => setQuickAction({ pr, event })}
+                        />
                       </div>
                     </div>
                   </li>
@@ -278,6 +295,62 @@ export function InboxPage() {
               })}
             </ul>
           )}
+          {!loading && items.length > 0 ? (
+            <nav
+              aria-label="PR inbox pages"
+              className="mt-4 flex flex-wrap items-center justify-between gap-3"
+            >
+              <p className="text-[11px] text-inkMuted">
+                Showing {firstItem + 1}–{Math.min(firstItem + pageSize, items.length)} of{" "}
+                {items.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <label htmlFor="inbox-page-size" className="text-[11px] text-inkMuted">
+                  Items per page
+                </label>
+                <Select
+                  id="inbox-page-size"
+                  value={pageSize}
+                  onChange={(event) => {
+                    setPageSize(Number(event.target.value));
+                    setPage(0);
+                  }}
+                  className="h-8 w-[4.75rem] text-xs"
+                >
+                  {PAGE_SIZES.map((size) => (
+                    <option key={size} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </Select>
+                {pageCount > 1 ? (
+                  <>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setPage(Math.max(0, currentPage - 1))}
+                      disabled={currentPage === 0}
+                      aria-label="Previous page"
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" /> Previous
+                    </Button>
+                    <span className="text-[11px] text-inkMuted">
+                      Page {currentPage + 1} of {pageCount}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => setPage(Math.min(pageCount - 1, currentPage + 1))}
+                      disabled={currentPage >= pageCount - 1}
+                      aria-label="Next page"
+                    >
+                      Next <ChevronRight className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            </nav>
+          ) : null}
         </CardBody>
       </Card>
 

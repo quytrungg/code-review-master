@@ -145,6 +145,17 @@ is created with `trigger='policy'` and `policy_id`. `max_active` counts that pol
 `running|draft|in_discussion` reviews; a failed creation releases the claim, and a stale claim
 expires. A policy does **not** auto-create a watch: a watch spends outside `max_active`.
 
+## The inbox keeps reviewed rows reviewed
+
+`cached_prs.status` is the user's latest own action (`approved`, `request_changed`, `commented`) or
+`needs_review` when there is none. A later reply never rewrites that status: it only sets
+`has_unread_replies`/`unread_replies_count`. `needs_attention` means `status = 'needs_review' OR
+has_unread_replies`; `GET /api/inbox?attention=true` and the navbar badge both use that set. Rows
+needing attention sort first and reviewed clean rows sort last. `status=reviewed` is a filter-only
+token matching the three reviewed statuses — `reviewed` is never stored. Discovery is windowed:
+sync only searches PRs created in the last two calendar months, so an older cached row leaves the
+inbox on the next sync.
+
 ## Findings carry a normalised key
 
 `review_threads.norm_key` (revision `0021`, backfilled) is the first twelve lower-cased,

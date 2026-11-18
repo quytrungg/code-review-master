@@ -9,6 +9,71 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+## Phase 57 — Discussion selection scrolls the code pane too — 2026-11-18
+
+Plan: `docs/plans/phase_57_plan.md`. No migration.
+
+### Fixed
+
+- **Clicking a discussion thread brings its code card into view.** The split pane now scrolls in both
+  directions: selecting a code card still scrolls the discussion pane to its pair, and selecting (or
+  focusing the composer of) a discussion card scrolls the code/context pane to the matching snippet
+  and highlights it. Selection still toggles off from the code pane, and Escape still clears it.
+
+---
+
+## Phase 56 — Inbox sync discovers only the last two months — 2026-11-17
+
+Plan: `docs/plans/phase_56_plan.md`. No migration.
+
+### Changed
+
+- **Sync with GitHub is scoped to recent work.** Every discovery query carries
+  `created:>=<two calendar months ago>`, so only pull requests opened in the last two months are
+  fetched, refreshed or added to the inbox. Cached rows outside the window leave on the next sync,
+  and the notice reports them as `N removed` rather than claiming GitHub closed them.
+
+---
+
+## Phase 55 — Inbox: compact card actions and pagination — 2026-11-17
+
+Plan: `docs/plans/phase_55_plan.md`. No migration.
+
+### Changed
+
+- **Inbox cards are quieter.** The per-card GitHub text link is now an icon beside the PR title
+  (same URL, new tab, accessible label). **Approve**, **Request changes** and **Comment** moved
+  into an **Actions** dropdown that opens the same `QuickReviewPanel`; **AI review** / **Open
+  review** is unchanged.
+- **The inbox pages through cards.** Ten per page by default, with a **10 / 20 / 50 / 100**
+  selector, `Showing X–Y of N`, and Previous/Next controls. Changing a filter or page size returns
+  to page 1, and a shrinking list clamps the page instead of showing an empty one.
+- The **Actions** menu closes on selection, outside click and Escape, and returns focus to its
+  trigger on Escape.
+
+---
+
+## Phase 54 — Inbox: reviewed items, unread replies and "needs attention" — 2026-11-17
+
+Plan: `docs/plans/phase_54_plan.md`. No migration.
+
+### Changed
+
+- **A reply no longer erases the review status.** Approving, commenting on or requesting changes on
+  an inbox PR keeps that row `approved` / `commented` / `request_changed`; the UI labels all three
+  **Reviewed**. A comment newer than the user's last review or comment adds the existing
+  **`<n> unread reply`** badge instead of rewriting the row to **Needs review**.
+- **Ordering follows attention.** Rows needing a first review or carrying unread replies sort to
+  the top (newest GitHub activity first); reviewed rows with no new replies sit at the bottom.
+- **"Unread replies only" is now "Needs attention only".** `GET /api/inbox?attention=true` returns
+  `needs_review OR has_unread_replies`, replacing the old `unread` parameter. The navbar badge uses
+  the same set, and `CachedPRRead.needs_attention` exposes the definition.
+- **The status filter collapses Reviewed.** The inbox offers **Every status / Needs review /
+  Reviewed** and defaults to **Every status**, so reviewed rows are visible below the attention
+  group. `status=reviewed` matches all three stored reviewed statuses.
+
+---
+
 ## Phase 53 — Claude sign-in as a second way to pay for Claude — 2026-11-17
 
 Plan: `docs/plans/phase_53_plan.md`. Migration `0025`.
