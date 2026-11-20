@@ -11,7 +11,7 @@ Use **Ollama Cloud** (default), **Claude**, **OpenAI/Codex**, **OpenCode** (Zen 
 - **A review you can argue with** — discuss findings, reference other threads with `#N`, accept a conclusion, or push back before anything is published. Disagree with the AI's verdict itself and it re-reads the review against your reasoning, then says whether it changed its mind. Replies stream token by token; stop the batch or retry one thread without losing what finished.
 - **Existing conversations included** — import current PR comments, sync new replies, and manage AI findings and human discussions in one workspace.
 - **Publish only what you approve** — accepted findings become one review with inline comments; rejected or withdrawn findings stay unpublished.
-- **Follow new pushes automatically** — watch a PR and review only the delta when its head commit changes.
+- **Follow new pushes automatically** — watch a PR and review only the delta when its head commit changes, or press **Check now** to review a push immediately instead of waiting for the poll.
 - **Your standards can improve themselves** — let a model read your last 30 days of reviews and pushbacks in their comment threads, propose edits to the guideline files, review the diff, then apply them or clone them into a new foundation.
 - **Understand model usage** — track calls, tokens, latency, estimated cost, acceptance rate, and push-back rate per review and across models.
 - **Catch what a regex knows for certain** — optional deterministic packs flag committed token prefixes, private-key headers, conflict markers, debugger statements, `console.log`, and focused tests before the model runs, at zero tokens.
@@ -53,7 +53,9 @@ A typical session looks like this:
 5. Choose `REQUEST_CHANGES`, `APPROVE`, or `COMMENT` and apply the review. An approval needs nothing
    accepted — the PR is the message — and a review that already posted comments can still approve the
    same pull request once.
-6. Optionally watch the PR so later pushes receive a linked delta review.
+6. Optionally watch the PR so later pushes receive a linked delta review. Watches are polled every
+   ten minutes (or by the serverless cron); **Check now** beside the watch button runs that check
+   straight away, and works on a paused watch too.
 
 Review ingest has its own output budget (`LLM_REVIEW_MAX_TOKENS`, default `8192`) and disables reasoning on the OpenCode relay, so a reasoning model spends the call writing findings instead of deliberation.
 

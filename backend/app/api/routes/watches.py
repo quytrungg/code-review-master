@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hmac
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,8 +23,10 @@ from app.schemas.watch import (
     ReviewWatchRead,
     TickResultRead,
     UpdateWatchRequest,
+    WatchCheckRead,
 )
 from app.services import watch_service
+from app.services.review_pipeline import schedule_ingest
 
 router = APIRouter(prefix="/watches", tags=["watches"])
 tick_router = APIRouter(prefix="/watches", tags=["watches"])
@@ -77,6 +79,38 @@ def delete_watch(watch_id: int, user: CurrentUser, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Watch not found")
     watch_service.delete_watch(db, watch)
     return Response(status_code=204)
+
+
+@router.post("/{watch_id}/check", status_code=202, response_model=WatchCheckRead)
+async def check_watch(
+    watch_id: int,
+    response: Response,
+    user: CurrentUser,
+    background: BackgroundTasks,
+) -> WatchCheckRead:
+    """Check this watch now instead of waiting for the next tick.
+
+    `202` when a delta review started (its progress streams from `/api/reviews/{id}/events`), `200`
+    when there is nothing to review, `404` for another account's watch, `502` when the head could
+    not be read. Works on a paused watch: `enabled` gates the poll, not the click.
+    """
+    outcome = await watch_service.check_now(user.id, watch_id)
+    if outcome is None:
+        raise HTTPException(status_code=404, detail="Watch not found")
+    if outcome.status == "failed":
+        raise HTTPException(
+            status_code=502, detail=outcome.detail or "The change request could not be read."
+        )
+
+    claim = outcome.claim
+    if claim is not None:
+        schedule_ingest(claim.review_id, background, pr=claim.pr, diff_text=claim.diff_text)
+        return WatchCheckRead(
+            status=outcome.status, review_id=claim.review_id, head_sha=outcome.head_sha
+        )
+
+    response.status_code = 200
+    return WatchCheckRead(status=outcome.status, head_sha=outcome.head_sha, detail=outcome.detail)
 
 
 def require_tick_secret(request: Request) -> None:

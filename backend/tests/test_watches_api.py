@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
 from app.main import app
 from app.models.review import CodeReview, ReviewStatus
 from app.services import watch_service
-from tests.conftest import TEST_EMAIL
+from tests.conftest import TEST_EMAIL, wait_for_review
 from tests.fixtures import PR_URL, provision
+from tests.test_watch_service import HEAD_A, HEAD_B, GitHub, configure
 
 
 @pytest.fixture()
@@ -252,3 +253,136 @@ def test_start_loop_declines_when_the_interval_is_zero(client, monkeypatch):
     finally:
         monkeypatch.delenv("WATCH_INTERVAL_MINUTES")
         get_settings.cache_clear()
+
+
+def watch_once(client, commit: str = HEAD_A) -> tuple[int, int]:
+    """Create a review at `commit` and watch its pull request; `(review_id, watch_id)`."""
+    review_id = make_review(commit=commit)
+    created = client.post("/api/watches", json={"review_id": review_id})
+    assert created.status_code == 201, created.text
+    return review_id, int(created.json()["id"])
+
+
+def stored_watch(client, watch_id: int) -> dict:
+    return next(row for row in client.get("/api/watches").json() if row["id"] == watch_id)
+
+
+def reviews_for(watch_id: int) -> list[CodeReview]:
+    with SessionLocal() as db:
+        return list(db.scalars(select(CodeReview).where(CodeReview.watch_id == watch_id)))
+
+
+def test_check_now_starts_a_linked_delta_review(client, monkeypatch):
+    github = configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    review_id, watch_id = watch_once(client)
+
+    response = client.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["status"] == "started"
+    assert body["head_sha"] == HEAD_B
+    assert github.compares == [(HEAD_A, HEAD_B)]
+
+    review = wait_for_review(client, body["review_id"])
+    assert review["trigger"] == "watch"
+    assert review["parent_review_id"] == review_id
+    assert review["commit_id"] == HEAD_B
+    assert review["status"] == "draft"
+    # Only the delta was reviewed, anchored on the file the comparison produced.
+    assert [thread["file_path"] for thread in review["threads"]] == ["src/services/billing.py"]
+
+    stored = stored_watch(client, watch_id)
+    assert stored["last_seen_commit_id"] == HEAD_B
+    assert stored["last_review_id"] == body["review_id"]
+    assert stored["last_checked_at"] is not None
+
+
+def test_check_now_with_an_unchanged_head_starts_nothing(client, monkeypatch):
+    github = configure(monkeypatch, GitHub(head=HEAD_A))
+    provision(client)
+    _, watch_id = watch_once(client)
+
+    response = client.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "unchanged"
+    assert body["review_id"] is None
+    assert github.compares == []
+    assert reviews_for(watch_id) == []
+    assert stored_watch(client, watch_id)["last_checked_at"] is not None
+
+
+def test_a_paused_watch_can_still_be_checked_by_hand(client, monkeypatch):
+    configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    _, watch_id = watch_once(client)
+    assert client.patch(f"/api/watches/{watch_id}", json={"enabled": False}).status_code == 200
+
+    response = client.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code == 202, response.text
+    wait_for_review(client, response.json()["review_id"])
+    stored = stored_watch(client, watch_id)
+    assert stored["enabled"] is False  # a manual check never resumes the poll
+    assert stored["last_seen_commit_id"] == HEAD_B
+
+
+def test_pressing_check_twice_creates_one_review(client, monkeypatch):
+    configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    _, watch_id = watch_once(client)
+
+    first = client.post(f"/api/watches/{watch_id}/check")
+    second = client.post(f"/api/watches/{watch_id}/check")
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["status"] == "unchanged"
+    wait_for_review(client, first.json()["review_id"])
+    assert len(reviews_for(watch_id)) == 1
+
+
+def test_a_failed_check_is_a_502_and_keeps_the_delta(client, monkeypatch):
+    github = configure(monkeypatch, GitHub(head=HEAD_B, fail_compare=True))
+    provision(client)
+    _, watch_id = watch_once(client)
+
+    response = client.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code == 502, response.text
+    assert "force-pushed" in response.json()["detail"]
+    stored = stored_watch(client, watch_id)
+    assert stored["last_seen_commit_id"] == HEAD_A  # the claim rolled back with the failure
+    assert stored["last_error"] and "force-pushed" in stored["last_error"]
+    assert reviews_for(watch_id) == []
+
+    # The next click retries the same delta and succeeds.
+    github.fail_compare = False
+    assert client.post(f"/api/watches/{watch_id}/check").status_code == 202
+
+
+def test_another_account_cannot_check_a_watch(client, second_client, monkeypatch):
+    github = configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    _, watch_id = watch_once(client)
+
+    response = second_client.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code == 404, response.text
+    assert github.fetches == 0
+    assert stored_watch(client, watch_id)["last_seen_commit_id"] == HEAD_A
+    assert reviews_for(watch_id) == []
+
+
+def test_check_now_needs_a_session(client, monkeypatch):
+    configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    _, watch_id = watch_once(client)
+
+    with TestClient(app) as anonymous:
+        response = anonymous.post(f"/api/watches/{watch_id}/check")
+
+    assert response.status_code in (401, 403), response.text

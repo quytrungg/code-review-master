@@ -51,6 +51,15 @@ class UpdateWatchRequest(BaseModel):
     enabled: bool
 
 
+class WatchCheckRead(BaseModel):
+    """What an on-demand check did. `started` carries the review id the workspace opens."""
+
+    status: str  # started | unchanged | adopted | skipped
+    review_id: int | None = None
+    head_sha: str | None = None
+    detail: str | None = None
+
+
 class WatchFailure(BaseModel):
     watch_id: int
     error: str | None = None

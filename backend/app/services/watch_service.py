@@ -11,13 +11,16 @@ second guard, for the case where the claim logic is ever wrong.
 review stays visible as `failed`, the watch keeps moving with later pushes, and the operator can
 re-run that pull request by hand. Advancing on success would re-review the same delta on every tick
 until the model cooperated — the review spam this feature exists to avoid.
+
+`check_now` is the same claim on demand (`POST /api/watches/{id}/check`): `enabled` gates only the
+tick's poll, so a paused watch can still be checked by hand and answers with the review to open.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -30,6 +33,7 @@ from app.models.review import CodeReview
 from app.models.watch import ReviewTrigger, ReviewWatch
 from app.services import keys_service, vcs
 from app.services import policy_service
+from app.services.pull_request import PullRequestInfo
 from app.services.review_pipeline import PipelineError, create_running_review, run_ingest
 
 logger = logging.getLogger(__name__)
@@ -69,6 +73,25 @@ class TickResult:
             "policy_skipped": self.policy_skipped,
             "policy_failed": list(self.policy_failed),
         }
+
+
+@dataclass(frozen=True)
+class DeltaClaim:
+    """A delta this watch claimed: its review row is committed, ingest has not run yet."""
+
+    review_id: int
+    pr: PullRequestInfo
+    diff_text: str
+
+
+@dataclass(frozen=True)
+class DeltaCheck:
+    """One check of one watch. `claim` is set only when this call won the delta."""
+
+    status: str  # unchanged | adopted | skipped | failed | claimed
+    head_sha: str | None = None
+    claim: DeltaClaim | None = None
+    detail: str | None = None
 
 
 def create_watch(db: Session, user_id: int, review: CodeReview) -> tuple[ReviewWatch, bool]:
@@ -184,11 +207,35 @@ async def tick(max_reviews: int | None = None) -> TickResult:
 
 
 async def _check_watch(watch_id: int) -> tuple[str, int | None, str | None]:
-    """One watch: fetch the head, then no-op, adopt, or claim a delta and start its review."""
+    """One watch on the tick: claim a delta, then run its ingest here (cron must survive)."""
+    check = await claim_delta(watch_id)
+    claim = check.claim
+    if claim is None:
+        return check.status, None, check.detail
+    await run_ingest(claim.review_id, pr=claim.pr, diff_text=claim.diff_text)
+    return "started", claim.review_id, None
+
+
+async def check_now(user_id: int, watch_id: int) -> DeltaCheck | None:
+    """Check one watch on demand. `None` when the watch is not this account's (route answers 404).
+
+    `enabled` gates the *poll*, not the check: a paused watch can still be checked by hand, which is
+    how an operator turns a polling deployment into a click-driven one. Those checks touch the same
+    state a tick does, so the tick queue stays fair.
+    """
+    with SessionLocal() as db:
+        if owned_watch(db, user_id, watch_id) is None:
+            return None
+    check = await claim_delta(watch_id, require_enabled=False)
+    return replace(check, status="started") if check.status == "claimed" else check
+
+
+async def claim_delta(watch_id: int, *, require_enabled: bool = True) -> DeltaCheck:
+    """Fetch the head, then no-op, adopt, or claim the delta and commit its review row."""
     with SessionLocal() as db:
         watch = db.get(ReviewWatch, watch_id)
-        if watch is None or not watch.enabled:
-            return "skipped", None, None
+        if watch is None or (require_enabled and not watch.enabled):
+            return DeltaCheck("skipped")
 
         try:
             ref = vcs.parse_pr_url(watch.pr_url)
@@ -198,17 +245,17 @@ async def _check_watch(watch_id: int) -> tuple[str, int | None, str | None]:
             pr = await vcs.fetch(key, ref)
         except vcs.VCSError as exc:
             _record_failure(db, watch, exc.message)
-            return "failed", None, exc.message
+            return DeltaCheck("failed", detail=exc.message)
 
         previous = watch.last_seen_commit_id
         if pr.head_sha == previous:
             _touch(db, watch)
-            return "unchanged", None, None
+            return DeltaCheck("unchanged", head_sha=pr.head_sha)
         if not previous:
             # No base to compare against (a watch made from a review that never fetched): adopt
             # this head and review the *next* push, rather than reviewing the whole PR by accident.
             _touch(db, watch, last_seen=pr.head_sha)
-            return "adopted", None, None
+            return DeltaCheck("adopted", head_sha=pr.head_sha)
 
         try:
             claimed = db.execute(
@@ -221,7 +268,11 @@ async def _check_watch(watch_id: int) -> tuple[str, int | None, str | None]:
             ).rowcount
             if claimed != 1:
                 db.rollback()
-                return "skipped", None, None  # another tick owns this delta
+                return DeltaCheck(
+                    "skipped",
+                    head_sha=pr.head_sha,
+                    detail="Another check owns this commit.",
+                )
 
             diff_text = await vcs.compare(key, ref, previous, pr.head_sha)
             review = create_running_review(
@@ -244,23 +295,29 @@ async def _check_watch(watch_id: int) -> tuple[str, int | None, str | None]:
         except vcs.VCSError as exc:
             db.rollback()
             _record_failure(db, watch, exc.message)
-            return "failed", None, exc.message
+            return DeltaCheck("failed", head_sha=pr.head_sha, detail=exc.message)
         except PipelineError as exc:
             db.rollback()
             _record_failure(db, watch, exc.detail)
-            return "failed", None, exc.detail
+            return DeltaCheck("failed", head_sha=pr.head_sha, detail=exc.detail)
         except IntegrityError:
             db.rollback()
             logger.info("Watch %s already has a review for %s", watch_id, pr.head_sha)
             # The review this delta would have produced already exists (another process got there
-            # first). Roll the claim back would park the watch on the same commit forever, so move
-            # it past the commit in its own transaction — retrying cannot help.
+            # first). Rolling the claim back would park the watch on the same commit forever, so
+            # move it past the commit in its own transaction — retrying cannot help.
             _advance(db, watch, pr.head_sha)
-            return "skipped", None, None
+            return DeltaCheck(
+                "skipped",
+                head_sha=pr.head_sha,
+                detail="A review for this commit already exists.",
+            )
 
-    # The review row is committed; ingest runs outside the session it was created in.
-    await run_ingest(review_id, pr=pr, diff_text=diff_text)
-    return "started", review_id, None
+    return DeltaCheck(
+        "claimed",
+        head_sha=pr.head_sha,
+        claim=DeltaClaim(review_id=review_id, pr=pr, diff_text=diff_text),
+    )
 
 
 def _touch(db: Session, watch: ReviewWatch, *, last_seen: str | None = None) -> None:
@@ -380,7 +437,11 @@ async def _loop(interval: float) -> None:
 
 
 __all__ = [
+    "DeltaCheck",
+    "DeltaClaim",
     "TickResult",
+    "check_now",
+    "claim_delta",
     "create_watch",
     "delete_watch",
     "list_watches",

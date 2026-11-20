@@ -61,6 +61,12 @@ The scheduler is the deployment's, not the service's: locally the lifespan start
 response. A tick never holds a transaction across the ingest: the review row is committed first, then
 `run_ingest` opens its own session like any other ingest.
 
+`POST /api/watches/{id}/check` is the same claim on demand — `claim_delta` is the one implementation,
+and the route schedules the ingest instead of awaiting it, so the click answers `202` with the review
+id and the workspace streams its progress. `enabled` gates the tick's poll only: a paused watch can
+still be checked by hand, and a check never resumes it. One head, one review, either way — the CAS
+claim and `UNIQUE(watch_id, commit_id)` are what make a double click a no-op.
+
 ## Startup differs by mode
 
 - Local and Docker: `init_db()` (alembic upgrade head) and `fail_orphaned_reviews()` at startup —

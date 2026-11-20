@@ -9,6 +9,56 @@ refer to `backend/alembic/versions/`.
 
 ---
 
+---
+
+## Phase 59 — Check now: a watch the operator can trigger by hand — 2026-11-20
+
+Plan: `docs/plans/phase_59_plan.md`. No migration; `review_watches` already carried every column.
+
+### Added
+
+- **`POST /api/watches/{watch_id}/check`** runs one watch's claim immediately instead of waiting for
+  the next poll. `202` with the review id when a delta review started (progress streams from
+  `/api/reviews/{id}/events`), `200` with `status: unchanged | adopted | skipped` when there was
+  nothing to review, `502` when the head or comparison could not be read (and `last_error` is
+  recorded), `404` for another account's watch.
+- **Check now** beside the watch button in the review header: it opens the new delta review
+  straight away, or says why nothing started ("No new commits since 9f1c2ab").
+
+### Changed
+
+- `watch_service._check_watch` is split into `claim_delta` (fetch head → no-op / adopt /
+  compare-and-set claim → commit the review row) and the ingest dispatch, so the tick and the button
+  share one claim. The tick still awaits its ingest inline; the button schedules it and answers
+  immediately.
+- `enabled` now means "poll me": the scheduled tick still skips a paused watch, but a manual check
+  runs on it and never resumes the poll.
+- `schedule_ingest` accepts the `pr` / `diff_text` a watch already fetched, so a manual delta review
+  never refetches the whole change.
+
+## Phase 58 — Claude calls are priced again: family rows and a cost backfill — 2026-11-19
+
+Plan: `docs/plans/phase_58_plan.md`. No migration; data repaired by
+`backend/scripts/backfill_llm_costs.py`.
+
+### Fixed
+
+- **Claude spend was invisible in Analytics and in the monthly budget.** The price table stopped at
+  `claude-3-x` / `claude-4-5` while the app offers Claude 5.5, so every Claude call was written with
+  `estimated_cost_usd = NULL` and rendered as `—` — 194 of 194 calls. Three family rows
+  (`claude-opus`, `claude-sonnet`, `claude-haiku`) now price any generation or dated snapshot with
+  no row of its own; an exact row still wins, so `claude-3-haiku` keeps its lower rate. Family rows
+  are documented as *ceilings*: an unlisted generation is over-estimated rather than under-reported.
+- **A catalogue bump can no longer go unpriced silently.** A test asserts every id in
+  `CLAUDE_FALLBACK` resolves via `price_for`, and another pins that there is no bare `claude-`
+  catch-all (`claude-2.1` stays unknown).
+- **Existing rows repriced.** `scripts/backfill_llm_costs.py --apply` recomputed 186 of 290 ledger
+  rows, taking the 30-day estimated spend for the local account from `$2.21` to `$46.01`
+  (`claude` alone: `$43.86`). A second run reports `changed 0`. The script now also writes `0.0`
+  over a `NULL` row that recomputes to zero (a local call), instead of leaving known-free as unknown.
+
+---
+
 ## Phase 57 — Discussion selection scrolls the code pane too — 2026-11-18
 
 Plan: `docs/plans/phase_57_plan.md`. No migration.

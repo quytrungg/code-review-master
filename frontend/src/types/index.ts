@@ -449,6 +449,14 @@ export interface ReviewWatch {
   created_at: string | null;
 }
 
+/** What pressing "Check now" on a watch did: `started` carries the review to open. */
+export interface WatchCheck {
+  status: "started" | "unchanged" | "adopted" | "skipped";
+  review_id: number | null;
+  head_sha: string | null;
+  detail: string | null;
+}
+
 export interface AuthUser {
   id: number;
   email: string;

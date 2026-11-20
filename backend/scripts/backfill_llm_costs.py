@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 """Recompute `llm_calls.estimated_cost_usd` from the stored tokens and the current price table.
 
-One-off data repair for the rows written while `ollama-cloud` was wrongly treated as a free
-provider: their cost is stored as `0.0`, and only a recompute can fix that, because the price table
-is not consulted again after the row is written.
+One-off data repair for rows the price table did not cover when they were written: their cost is
+stored as `0.0` or `NULL`, and only a recompute can fix that, because the price table is not
+consulted again after the row is written. Two runs are recorded in the plans — phase 24 (cloud calls
+stored as `0.0` while Ollama Cloud was treated as free) and phase 58 (Claude calls stored as `NULL`
+before the table gained family rows).
 
     python scripts/backfill_llm_costs.py            # dry run: report only, writes nothing
     python scripts/backfill_llm_costs.py --apply    # write the corrected values
@@ -11,10 +13,11 @@ is not consulted again after the row is written.
 `--dry-run` is the default on purpose: this rewrites money on rows the operator already has. The
 computation is deterministic and idempotent, so re-running `--apply` changes nothing.
 
-Rows are only touched when the recomputed value differs: a call whose model has no published price
-(`estimate_cost` returns `None`) keeps whatever it has, and a failed call with no tokens is left
-alone. Recorded in `docs/plans/phase_24_plan.md`; this is a repair, not an Alembic revision, so
-`alembic_version` stays at head.
+Rows are only touched when the recomputed value differs: a call whose model still has no published
+price (`estimate_cost` returns `None`) keeps whatever it has, and a failed call with no tokens is
+left alone. A `NULL` row that recomputes to `0.0` (a free local call) is written as `0.0` — known
+free is not the same as unknown. This is a repair, not an Alembic revision, so `alembic_version`
+stays at head.
 """
 
 from __future__ import annotations
@@ -91,7 +94,12 @@ def recompute(db: Session, *, apply: bool = False) -> Result:
             continue
 
         group.new_total += cost
-        if abs(cost - (row.estimated_cost_usd or 0.0)) < 10**-PRECISION:
+        # Compare by identity, not `or 0.0`: a NULL row that recomputes to 0.0 (a free local call)
+        # must be written too, or it stays "unknown" forever.
+        if (
+            row.estimated_cost_usd is not None
+            and abs(cost - row.estimated_cost_usd) < 10**-PRECISION
+        ):
             continue
         group.changed += 1
         if apply:

@@ -43,6 +43,7 @@ import type {
   VerdictPushbackResponse,
   VersionControlKey,
   VersionControlKeyCreate,
+  WatchCheck,
 } from "@/types";
 
 const BASE_URL = "/api";
@@ -341,6 +342,10 @@ export const api = {
     }),
 
   deleteWatch: (watchId: number) => request<void>(`/watches/${watchId}`, { method: "DELETE" }),
+
+  // Check one watch now instead of waiting for the next scheduled tick.
+  checkWatch: (watchId: number) =>
+    request<WatchCheck>(`/watches/${watchId}/check`, { method: "POST" }),
 
   getAnalytics: (days = 30) => request<AnalyticsResponse>(`/analytics?days=${days}`),
 

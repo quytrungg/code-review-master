@@ -64,9 +64,13 @@ readers for Claude Code, Codex and Hermes, correction scoring, and the prompt ex
 `app/core/pricing.py` is the only price source: published list prices per 1M tokens, matched by
 model prefix, standard tier only. `ollama-local` is in `FREE_PROVIDERS` because it runs on the
 operator's hardware; every hosted provider — Ollama Cloud included, metered since 2026-08-31 — is
-priced. A model with no row returns `None` (the UI shows `—`), never `0`. When a row already in the
-ledger is mispriced, the repair is `scripts/backfill_llm_costs.py` (dry run by default), recorded in
-the phase plan — not a migration.
+priced. A model with no row returns `None` (the UI shows `—`), never `0`. A family row
+(`claude-sonnet`) prices every generation and dated snapshot of that family that has no exact row of
+its own and is a **ceiling**, the highest rate published for the family — so a model the table has
+not caught up with is over-estimated, not under-reported. Add an exact row (`claude-3-haiku`) when a
+generation's rate differs; longest prefix wins, so it overrides the family automatically. When a row
+already in the ledger is mispriced or unpriced, the repair is `scripts/backfill_llm_costs.py` (dry
+run by default), recorded in the phase plan — not a migration.
 
 ## Schema and time
 

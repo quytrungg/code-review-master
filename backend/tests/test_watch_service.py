@@ -366,6 +366,62 @@ def test_a_watch_without_a_base_adopts_the_head_instead_of_reviewing_everything(
     assert reload_watch(watch_id).last_seen_commit_id == HEAD_B
 
 
+def test_claim_delta_commits_the_review_without_running_ingest(client, monkeypatch):
+    """The manual path and the tick share one claim; whoever claims dispatches the ingest."""
+    github = configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    parent_id = make_review()
+    watch_id = watch(parent_id)
+
+    check = asyncio.run(watch_service.claim_delta(watch_id))
+
+    assert check.status == "claimed"
+    assert check.head_sha == HEAD_B
+    assert github.compares == [(HEAD_A, HEAD_B)]
+    claim = check.claim
+    assert claim is not None
+    assert claim.pr.head_sha == HEAD_B
+    assert claim.diff_text == DELTA_DIFF
+    (review,) = delta_reviews(watch_id)
+    assert claim.review_id == review.id
+    assert review.parent_review_id == parent_id
+    assert review.trigger == ReviewTrigger.WATCH
+    # Committed but not run: the caller schedules the ingest.
+    assert review.status == ReviewStatus.RUNNING
+
+
+def test_check_now_checks_a_paused_watch_that_the_tick_skips(client, monkeypatch):
+    configure(monkeypatch, GitHub(head=HEAD_B))
+    provision(client)
+    watch_id = watch(make_review())
+    with SessionLocal() as db:
+        db.execute(
+            text("UPDATE review_watches SET enabled = :off WHERE id = :id"),
+            {"off": False, "id": watch_id},
+        )
+        db.commit()
+
+    assert asyncio.run(watch_service.tick()).checked == 0
+    check = asyncio.run(watch_service.check_now(owner_id(), watch_id))
+
+    assert check is not None and check.status == "started"
+    assert check.claim is not None
+    assert len(delta_reviews(watch_id)) == 1
+    paused = reload_watch(watch_id)
+    assert paused.enabled is False
+    assert paused.last_seen_commit_id == HEAD_B
+
+
+def test_check_now_is_none_for_an_unknown_or_foreign_watch(client, monkeypatch):
+    configure(monkeypatch, GitHub())
+    provision(client)
+
+    assert asyncio.run(watch_service.check_now(owner_id(), 999_999)) is None
+    # Another account's watch is `None` (the route answers 404), never a claim.
+    watch_id = watch(make_review())
+    assert asyncio.run(watch_service.check_now(owner_id() + 1, watch_id)) is None
+
+
 def test_applying_a_delta_review_posts_only_its_own_rounds(client, monkeypatch):
     configure(monkeypatch, GitHub(head=HEAD_B))
     provision(client)

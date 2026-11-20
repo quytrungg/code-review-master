@@ -299,7 +299,13 @@ def create_running_review(
     return review
 
 
-def schedule_ingest(review_id: int, background: BackgroundScheduler | None = None) -> None:
+def schedule_ingest(
+    review_id: int,
+    background: BackgroundScheduler | None = None,
+    *,
+    pr: PullRequestInfo | None = None,
+    diff_text: str | None = None,
+) -> None:
     """Start `run_ingest` for a freshly created review.
 
     A serverless function is torn down when its ASGI call completes, which cancels a bare
@@ -308,12 +314,15 @@ def schedule_ingest(review_id: int, background: BackgroundScheduler | None = Non
     to the response instead. The `vercel` SDK's `wait_until` is the fallback if a preview deploy
     shows the task is cut, but it drags a dozen packages and a pydantic bump into the image for
     one helper.
+
+    `pr`/`diff_text` are the delta a watch check already fetched; omitted means "fetch it", which
+    is what every other caller wants.
     """
     if get_settings().serverless and background is not None:
-        background.add_task(run_ingest, review_id)
+        background.add_task(run_ingest, review_id, pr=pr, diff_text=diff_text)
         return
 
-    task = asyncio.create_task(run_ingest(review_id))
+    task = asyncio.create_task(run_ingest(review_id, pr=pr, diff_text=diff_text))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 

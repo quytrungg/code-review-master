@@ -122,3 +122,44 @@ def test_a_failed_call_without_tokens_stays_unknown(calls: Callable) -> None:
     assert group.changed == 0
     assert group.unpriced == 1
     assert stored(row_id) is None
+
+
+def test_a_null_claude_row_is_priced_from_its_family_row(calls: Callable) -> None:
+    """Phase 58: Claude calls were written as NULL while the table had no row covering them."""
+    row_id = calls(
+        provider="claude",
+        model="claude-sonnet-5-5",
+        prompt_tokens=1_000_000,
+        completion_tokens=1_000_000,
+        total_tokens=2_000_000,
+        estimated_cost_usd=None,
+    )
+
+    with SessionLocal() as db:
+        result = backfill.recompute(db, apply=True)
+
+    group = result.groups[("claude", "claude-sonnet-5-5")]
+    assert group.changed == 1
+    assert group.unpriced == 0
+    assert stored(row_id) == pytest.approx(18.0)
+
+
+def test_a_null_row_that_recomputes_to_zero_is_written_as_zero(calls: Callable) -> None:
+    """Known free is not unknown: a local call keeps `0.0` instead of staying NULL forever."""
+    row_id = calls(
+        provider="ollama-local",
+        model="llama3",
+        prompt_tokens=640,
+        completion_tokens=128,
+        total_tokens=768,
+        estimated_cost_usd=None,
+    )
+
+    with SessionLocal() as db:
+        result = backfill.recompute(db, apply=True)
+
+    group = result.groups[("ollama-local", "llama3")]
+    assert group.changed == 1
+    assert group.unpriced == 0
+    assert stored(row_id) == 0.0
+

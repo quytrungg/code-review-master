@@ -18,6 +18,19 @@ it publishes an input rate and no output rate, which this shape cannot express.
 
 Keep the table current rather than complete: a stale price is worse than a missing one because it
 looks exact.
+
+Two tiers cover a family whose catalogue moves faster than this file:
+
+- **An exact row** names a generation (`claude-3-haiku`, `claude-sonnet-4-5`) and is a quote.
+- **A family row** names only the family (`claude-sonnet`) and is a **ceiling**: the highest
+  standard rate any generation of that family has published. Every dated snapshot and every
+  generation without a row of its own inherits it, so an unpriced model is *over*-estimated rather
+  than under-reported — the safe direction for a budget cap — and the UI's `~$` and "estimated"
+  labels carry the uncertainty.
+
+Longest prefix wins, so an exact row always beats its family row; add one when a generation's price
+moves away from its family's ceiling. There is no bare `claude-` row on purpose: Haiku, Sonnet and
+Opus differ roughly twentyfold, and one number for all three would be wrong while looking exact.
 """
 
 from __future__ import annotations
@@ -32,6 +45,10 @@ class ModelPrice(TypedDict):
 
 MODEL_PRICES: dict[str, ModelPrice] = {
     # --- Anthropic ---------------------------------------------------------------------------
+    # Family ceilings (see the module docstring), then the exact generations priced differently.
+    "claude-opus": {"input": 15.00, "output": 75.00},
+    "claude-sonnet": {"input": 3.00, "output": 15.00},
+    "claude-haiku": {"input": 0.80, "output": 4.00},
     "claude-3-5-sonnet": {"input": 3.00, "output": 15.00},
     "claude-sonnet-4-5": {"input": 3.00, "output": 15.00},
     "claude-3-5-haiku": {"input": 0.80, "output": 4.00},
@@ -68,8 +85,9 @@ MODEL_PRICES: dict[str, ModelPrice] = {
 # Ollama **Cloud** is not in here — it is metered and priced from the table above.
 FREE_PROVIDERS = ("ollama-local",)
 
-# Longest prefix first: `deepseek-v4.1-flash` must win over `deepseek-v4-pro`, `gpt-4o-mini` over
-# `gpt-4o`, and `glm-5.3-flash` over `glm-5.3`.
+# Longest prefix first, so an exact row always wins over its family row: `claude-sonnet-4-5` over
+# `claude-sonnet`, `gpt-4o-mini` over `gpt-4o`, `glm-5.3-flash` over `glm-5.3`, `kimi-k3.1-pro`
+# over `kimi-k3`. The same rule lets a tagged cloud id (`deepseek-v4.1-flash:1017`) match by prefix.
 _PREFIXES = sorted(MODEL_PRICES, key=len, reverse=True)
 
 

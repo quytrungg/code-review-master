@@ -112,6 +112,34 @@ def test_unknown_model_has_no_price():
     assert estimate_cost("openai", "gpt-5-codex", 1000, 500) is None
 
 
+def test_every_offered_claude_model_has_a_price():
+    """The catalogue moving ahead of the table is how Claude spend silently went unpriced."""
+    unpriced = [
+        entry["id"] for entry in llm_service.CLAUDE_FALLBACK if price_for(entry["id"]) is None
+    ]
+    assert unpriced == []
+
+
+def test_a_new_claude_generation_inherits_its_family_ceiling():
+    # A generation (or dated snapshot) with no row of its own still costs, at its family's ceiling.
+    assert price_for("claude-sonnet-6-1-20261201") == {"input": 3.00, "output": 15.00}
+    assert price_for("claude-opus-6") == {"input": 15.00, "output": 75.00}
+    assert price_for("claude-haiku-6-0") == {"input": 0.80, "output": 4.00}
+    assert estimate_cost("claude", "claude-sonnet-5-5", 1_000_000, 1_000_000) == 18.0
+
+
+def test_an_exact_row_beats_the_family_row():
+    # `claude-3-haiku` is a fifth of the current Haiku band: the more specific row must win.
+    assert price_for("claude-3-haiku-20240307") == {"input": 0.25, "output": 1.25}
+    assert price_for("claude-3-haiku") != price_for("claude-haiku-5-5")
+
+
+def test_claude_is_not_a_catch_all_prefix():
+    """No bare `claude-` row: a retired id stays unknown rather than borrowing a family's price."""
+    assert price_for("claude-2.1") is None
+    assert estimate_cost("claude", "claude-2.1", 1_000_000, 1_000_000) is None
+
+
 def test_cost_is_per_million_tokens():
     assert estimate_cost("claude", "claude-sonnet-4-5-20250929", 1_000_000, 1_000_000) == 18.0
 
